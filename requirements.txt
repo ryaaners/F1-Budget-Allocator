@@ -1,0 +1,8 @@
+# Python 3.9.7 can install Streamlit 1.12.0, while newer Streamlit releases cannot.
+# The app intentionally uses the shared API surface of this release and modern releases.
+streamlit==1.12.0
+pandas==2.3.3
+numpy==2.0.2
+plotly==7.1.0
+altair==4.2.2
+protobuf==3.20.3
