@@ -54,6 +54,25 @@ simulation** control clears only the season simulation and returns to team setup
   planned R&D, cost per point, game sanctions, real-2025 comparison, decision moments,
   and 2026 carrying value.
 
+### Survival cell safety
+
+The survival cell is the carbon-fibre shell around the driver. Under a cost cap, every
+dollar kept for it competes with lap time, so the simulator makes that trade-off visible.
+
+- **Crash severity:** every Chassis / structures incident gets a simulated impact
+  (in g), harder at risky or wet circuits. A **small hit** (under 20g) passes the
+  survival cell check and can still be delayed with "Run older specification". A
+  **medium hit** (20–45g) cracks the cell and adds a CAD $0.8M repair. A **big hit**
+  (45g and up) destroys it and adds a CAD $2.5M replacement. Medium and big hits
+  cannot be delayed, because a car with a damaged survival cell cannot race.
+- **Crash safety money:** Race control shows how many big crashes (about CAD $4.0M
+  each) the team could still pay for inside the cap, after unpaid repairs. Committing
+  a package that would leave less than one big crash triggers a safety warning, and the
+  player must tick an override box to buy it anyway. Pre-season setup shows the same
+  status for the planned reserve.
+- The manual crash form in the Season ledger can force a small, medium, or big hit for
+  demos.
+
 ### Budget Workspace
 
 - **Budget Tracker:** category spend, allocation use, CAD cost-cap balance, historical

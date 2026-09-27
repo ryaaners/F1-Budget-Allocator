@@ -142,6 +142,39 @@ def display_team_dossier(team):
         st.caption("Modelled planning profile. FIA team cost-cap filings are confidential.")
 
 
+def show_safety_message(reserve):
+    crashes = reserve["crashes"]
+    if reserve["status"] == "safe":
+        st.success(f"Crash money: safe. You could pay for {crashes} big crashes without breaking the budget cap.")
+    elif reserve["status"] == "tight":
+        st.warning("Crash money: tight. You can only pay for 1 more big crash. Think twice before buying more upgrades.")
+    else:
+        st.error(f"Crash money: at risk. If a big crash happened now, you could not pay for a new survival cell (about {money(reserve['crash_cost'])}) without breaking the budget cap.")
+
+
+def show_safety_reserve(reserve):
+    one, two, three = st.columns(3)
+    one.metric("Money free for crashes", money(reserve["free"]))
+    two.metric("Big crashes you can afford", reserve["crashes"])
+    three.metric("Cost of one big crash", money(reserve["crash_cost"]))
+    show_safety_message(reserve)
+    if reserve["owed"]:
+        st.caption(f"Already takes off {money(reserve['owed'])} owed for repairs that have not been paid yet.")
+
+
+def show_survival_cell_check(incident):
+    """Plain-language result of the survival-cell check for a structural crash."""
+    severity = incident["severity"]
+    heading = f"Survival cell check · {season.SEVERITY_LABELS[severity]} · {incident['impact_g']:.0f}g impact"
+    extra = money(season.SURVIVAL_CELL_EXTRA_COST[severity])
+    if severity == "small":
+        st.info(f"**{heading}**\n\nPassed. The carbon-fibre shell that protects the driver is not damaged, so this repair can wait if you need the money.")
+    elif severity == "medium":
+        st.warning(f"**{heading}**\n\nCracked. The shell that protects the driver is damaged and would not survive another crash. It must be repaired ({extra} included) before the car races again.")
+    else:
+        st.error(f"**{heading}**\n\nDestroyed. The shell that protects the driver cannot be fixed. A new one must be built ({extra} included) before the car races again.")
+
+
 def render_setup(con):
     st.title("2025 F1 Season Budget Simulation")
     st.markdown("<div class='finish-line'></div>", unsafe_allow_html=True)
@@ -163,6 +196,8 @@ def render_setup(con):
     a.metric("Pre-season committed", money(total))
     b.metric("Reserve for the season", money(remaining), "Within cap" if remaining >= 0 else "Over cap", delta_color="normal" if remaining >= 0 else "inverse")
     switch_round = c.slider("Future-car switch round", 1, 24, 16, help="New current-R&D spending shifts to the following car at this round.")
+    if remaining >= 0:
+        show_safety_message(season.reserve_status(remaining))
     if st.button("Begin 2025 budget simulation", disabled=remaining < 0):
         try:
             season.create_career(con, selected_id, allocation, switch_round=switch_round, theme="team")
@@ -178,20 +213,28 @@ def render_incident_decisions(con):
     st.markdown("#### Repair decisions required")
     st.warning("An unexpected event needs a budget decision before the next Grand Prix.")
     for incident in incidents:
-        with st.expander(f"{incident['title']} — {money(incident['amount'])}", expanded=incident["state"] == "pending"):
+        severity = incident.get("severity")
+        hit = f" · {season.SEVERITY_LABELS[severity]}" if severity else ""
+        with st.expander(f"{incident['title']}{hit} — {money(incident['amount'])}", expanded=incident["state"] == "pending"):
             st.write(incident["reason"])
             st.caption(f"Responsible party: {incident['responsible']} · Source: {incident['source']}")
+            if severity:
+                show_survival_cell_check(incident)
             if incident["state"] == "deferred":
                 st.info(f"Older specification active: +{incident['penalty']:.3f}s until repaired.")
+            options = [
+                "Fund from cap headroom",
+                "Cancel / reduce latest current-car upgrade",
+                "Use future-car reserve",
+                "Run older specification",
+                "Approve repair despite cap (game breach)",
+            ]
+            if season.must_repair(incident):
+                options.remove("Run older specification")
+                st.caption("“Run older specification” is switched off: a car with a damaged survival cell cannot race.")
             choice = st.radio(
                 "Decision",
-                [
-                    "Fund from cap headroom",
-                    "Cancel / reduce latest current-car upgrade",
-                    "Use future-car reserve",
-                    "Run older specification",
-                    "Approve repair despite cap (game breach)",
-                ],
+                options,
                 key=f"incident_{incident['id']}",
             )
             if st.button("Confirm repair decision", key=f"repair_{incident['id']}"):
@@ -256,6 +299,9 @@ def render_race_control(con, state):
     c.metric("Personnel / operations", f"-{perf['personnel'] + perf['operations']:.3f}s")
     d.metric("Active component penalty", f"+{perf['damage_penalty']:.3f}s")
     render_incident_decisions(con)
+    st.markdown("#### Crash safety money")
+    st.caption("Money kept free inside the budget cap so the team can always pay for a new survival cell after a big crash.")
+    show_safety_reserve(season.safety_reserve(con))
     st.markdown("#### Pre-race development call")
     with st.form("race_investment"):
         first, second, third = st.columns(3)
@@ -264,17 +310,21 @@ def render_race_control(con, state):
         note = third.text_input("Package note", f"{track['name']} package")
         target = "future car" if track["round"] >= state["switch_round"] and category in season.CURRENT_CAR_CATEGORIES else "current car"
         st.caption(f"This package is directed to the **{target}** under the current switch point.")
+        # Keyed by ledger size so the override box starts unticked again after every committed package.
+        override = st.checkbox("Buy it even if it leaves no money for a big crash", key=f"override_safety_{len(season.ledger(con))}")
         if st.form_submit_button("Commit package") and amount > 0:
             try:
-                future = season.commit_investment(con, category, amount * 1_000_000, note)
+                future = season.commit_investment(con, category, amount * 1_000_000, note, override_safety=override)
                 st.success(f"Package committed to the {'future car' if future else 'current car'}.")
                 rerun_app()
+            except season.SafetyReserveError as error:
+                st.warning(f"Safety warning: {error} To buy it anyway, tick the box above and press Commit package again.")
             except ValueError as error:
                 st.error(str(error))
     next_name = season.next_session(con)
     blocking_repair = any(incident["state"] == "pending" for incident in season.pending_incidents(con))
     if blocking_repair:
-        st.caption("Choose a funding path for the pending repair before the next session. Deferred repairs may continue with their pace penalty.")
+        st.caption("Choose a funding path for the pending repair before the next session. A damaged survival cell must be paid for before the car races; other repairs can be delayed with their pace penalty.")
     if next_name and st.button(f"Simulate {next_name}", disabled=blocking_repair):
         season.simulate_next_session(con)
         rerun_app()
@@ -320,6 +370,7 @@ def render_telemetry(con, state):
     with two:
         st.metric("Forecast cap balance", money(CAP - projected))
         st.metric("Crash tax", money(finance["crash_tax"]))
+        st.metric("Big crashes you can afford", season.safety_reserve(con)["crashes"])
         st.metric("Future-car committed", money(finance["future_car"]))
         if finance["future_reserve_draw"]:
             st.metric("Future reserve used for repairs", money(finance["future_reserve_draw"]))
@@ -390,8 +441,10 @@ def render_season_ledger(con, state):
             title = first.text_input("Event", "Manual component damage")
             amount = second.number_input("Estimated repair (CAD)", min_value=0.0, value=1_000_000.0, step=100_000.0)
             category = third.selectbox("Category", CATEGORIES, index=2)
+            hit_options = {"Roll from track risk": None, "Small hit": "small", "Medium hit": "medium", "Big hit": "big"}
+            hit = st.selectbox("Survival cell hit", list(hit_options), help="Only used for Chassis / structures events. Pick a size to demo a specific survival cell result.")
             if st.form_submit_button("Add pending repair") and amount > 0:
-                season.add_manual_incident(con, title, amount, category)
+                season.add_manual_incident(con, title, amount, category, severity=hit_options[hit])
                 rerun_app()
 
 

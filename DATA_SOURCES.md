@@ -34,5 +34,8 @@ seed.
 ## Gameplay boundary
 
 Financial return curves, repair costs, probabilities, forecast metrics, audit verdicts,
-and sanctions are transparent game mechanics. Nothing in the app represents an FIA
+and sanctions are transparent game mechanics. The survival cell impact values (g),
+the 20g and 45g hit thresholds, the survival-cell repair and replacement costs, and the
+CAD $4.0M big-crash reserve are also gameplay estimates. They are not FIA homologation
+test values or team invoices. Nothing in the app represents an FIA
 cost-cap finding, a published team account, or an official assignment of blame.
