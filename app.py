@@ -157,9 +157,14 @@ def show_portrait(driver, team, width=78):
     st.markdown(f"<div style='background:{team['primary']};height:{width}px;width:{width}px;border-radius:50%;display:grid;place-items:center;font-weight:800'>{initials}</div>", unsafe_allow_html=True)
 
 
-def team_driver_strip(team_id, round_number, width=60):
+def team_driver_strip(team_id, round_number, width=60, stacked=False):
     team = TEAMS[team_id]
     drivers = drivers_for_team_round(team_id, round_number)
+    if stacked:
+        for driver in drivers:
+            show_portrait(driver, team, width)
+            st.caption(driver["name"])
+        return
     columns = st.columns(len(drivers))
     for column, driver in zip(columns, drivers):
         with column:
@@ -185,7 +190,7 @@ def display_team_dossier(team_id):
         st.metric("Modelled fixed cost", money(team["fixed_cost"]))
     with middle:
         st.markdown("#### Round 1 drivers")
-        team_driver_strip(team_id, 1, 78)
+        team_driver_strip(team_id, 1, 78, stacked=True)
         st.caption("Driver cards follow the actual 2025 entrant list at each race weekend.")
     with right:
         costs = pd.DataFrame({"Category": list(team["model_cost_2024"]), "Modelled 2024 CAD": list(team["model_cost_2024"].values())})
@@ -512,10 +517,11 @@ def render_history_weather(con, state):
         if not primary:
             st.info("Historical weather was not available from the local source bundle for this race session.")
         else:
-            first, second, third = st.columns(3)
-            first.metric("Air", range_text(primary.get("air_temperature_c"), "°C"))
-            second.metric("Track", range_text(primary.get("track_temperature_c"), "°C"))
-            third.metric("Wind", range_text(primary.get("wind_speed_kph"), " km/h"))
+            st.write(
+                f"Air: {range_text(primary.get('air_temperature_c'), '°C')} · "
+                f"Track: {range_text(primary.get('track_temperature_c'), '°C')} · "
+                f"Wind: {range_text(primary.get('wind_speed_kph'), ' km/h')}"
+            )
             st.info(
                 f"OpenF1 {primary['session']} samples: "
                 + ("rain observed." if primary.get("rainfall_observed") else "no rain sample recorded.")
@@ -564,33 +570,30 @@ def render_history_weather(con, state):
                     st.caption("No selected-team entrant record is available for this session.")
                 for driver_record in session.get("drivers", []):
                     driver = historic_driver(driver_record["driver_id"], driver_record["driver"])
-                    driver_left, driver_right = st.columns([.15, .85])
-                    with driver_left:
-                        show_portrait(driver, TEAMS[state["team_id"]], 44)
-                    with driver_right:
-                        st.markdown(f"**{driver['name']}**")
-                        if driver_record.get("stints_available"):
-                            stints = pd.DataFrame(driver_record.get("stints") or []).rename(columns={
-                                "stint_number": "Stint", "compound": "Compound", "lap_start": "Start lap",
-                                "lap_end": "End lap", "tyre_age_at_start": "Tyre age at start",
-                            })
-                            if stints.empty:
-                                st.caption("The source returned no stint rows.")
-                            else:
-                                show_table(stints)
+                    show_portrait(driver, TEAMS[state["team_id"]], 44)
+                    st.markdown(f"**{driver['name']}**")
+                    if driver_record.get("stints_available"):
+                        stints = pd.DataFrame(driver_record.get("stints") or []).rename(columns={
+                            "stint_number": "Stint", "compound": "Compound", "lap_start": "Start lap",
+                            "lap_end": "End lap", "tyre_age_at_start": "Tyre age at start",
+                        })
+                        if stints.empty:
+                            st.caption("The source returned no stint rows.")
                         else:
-                            st.caption("Tyre-stint record not supplied by the source.")
-                        if driver_record.get("pit_stops_available"):
-                            pit_stops = pd.DataFrame(driver_record.get("pit_stops") or []).rename(columns={
-                                "timestamp_utc": "UTC", "lap": "Lap", "lane_duration_seconds": "Pit lane (s)",
-                                "stationary_duration_seconds": "Stationary (s)",
-                            })
-                            if pit_stops.empty:
-                                st.caption("No pit stop was recorded for this driver.")
-                            else:
-                                show_table(pit_stops)
+                            show_table(stints)
+                    else:
+                        st.caption("Tyre-stint record not supplied by the source.")
+                    if driver_record.get("pit_stops_available"):
+                        pit_stops = pd.DataFrame(driver_record.get("pit_stops") or []).rename(columns={
+                            "timestamp_utc": "UTC", "lap": "Lap", "lane_duration_seconds": "Pit lane (s)",
+                            "stationary_duration_seconds": "Stationary (s)",
+                        })
+                        if pit_stops.empty:
+                            st.caption("No pit stop was recorded for this driver.")
                         else:
-                            st.caption("Pit-lane record not supplied by the source.")
+                            show_table(pit_stops)
+                    else:
+                        st.caption("Pit-lane record not supplied by the source.")
         st.caption(strategy.get("note", ""))
     st.markdown("#### Selected-team event reference")
     if events:
