@@ -19,6 +19,9 @@ python3 -m streamlit run app.py
 
 Open the local address Streamlit prints, usually `http://localhost:8501`.
 
+Streamlit Community Cloud uses the repository `runtime.txt` pin (`python-3.11`)
+so it does not select Python 3.14 for the Streamlit 1.12 dependency stack.
+
 Local state is stored in `f1_budget.db`. **Reset active simulation** removes
 only the replay save and returns to team setup. Older active saves are migrated
 locally when opened: their team, allocation, and ledger choices remain, while
