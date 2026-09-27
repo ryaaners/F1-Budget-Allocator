@@ -56,15 +56,34 @@ critical-repair flag.
 An incident with no public physical-damage basis can remain a zero-cost reviewed
 record. The app does not invent a repair amount merely to create a decision.
 
-### Safety-planning evidence boundary
+### Safety-planning evidence boundary and prototype assumptions
 
-The first Safety planning view uses only the fields above, the recorded repair
-state, and the local crash-contingency ledger. A project critical-repair flag
-is a local replay workflow rule, not an FIA or engineering finding. The bundle
-does not contain verified spare inventory, component condition, repair duration,
-staffing, inspection/sign-off, release approval, or validated risk inputs. It
-therefore does not calculate a readiness score, recommend a repair, predict a
-failure, or authorise a car release.
+The historical-evidence area uses only the fields above, the recorded repair
+state, and the local crash-contingency ledger. A project critical-repair flag is
+a local replay workflow rule, not an FIA or engineering finding. The bundled
+public record does **not** contain verified spare inventory, component
+condition, repair duration, staffing, inspection/sign-off, release approval, or
+validated risk inputs.
+
+The separate Prototype Repair Planner intentionally does not fill those gaps
+with claimed facts. Its cost, duration, spare count, reserve floor, checklist,
+and response-option values are all local editable educational assumptions. The
+catalog defaults/checklist are in
+[`data/safety_planning_assumptions.json`](data/safety_planning_assumptions.json),
+and selected-option cost/work/spare values can be overridden in the UI and
+snapshotted with a local decision.
+They are not sourced team data, repair instructions, engineering validation, or
+official FIA requirements. Historical events can be selected only as a text
+context reference; their incident rows and source records are never modified by
+the planner. A saved planning record preserves a separate snapshot of the
+selected context label and available round/title/source-link fields, rather
+than treating the mutable replay incident ID as proof or a live dependency.
+
+The prototype may produce `HOLD`, `REVIEW_ELIGIBLE`, or `REVIEW_REQUESTED`.
+These describe only whether its entered assumptions, transparent resource
+checks, and local audit action are complete. They do not calculate a readiness
+score, recommend a real repair, predict a failure, authorise a vehicle release,
+or establish that a car is safe to race.
 
 User-added repair events from the Season ledger are displayed separately as
 local planning entries. They are never presented as historical incident
@@ -126,8 +145,16 @@ does not calculate Relevant Costs, determine an FIA breach, or predict an FIA
 sanction.
 
 The crash contingency is a planning reserve, not immediate spend. It tracks
-how much source-backed repair expenditure it can cover; unused reserve remains
-unspent cap headroom. Financial entries may exceed the gameplay cap. Any fine,
+how much local repair expenditure it can cover; unused reserve remains unspent
+cap headroom. A user may also explicitly commit a Prototype Repair
+Planner scenario: that creates a clearly labelled local modelled repair charge
+and, where selected, a matching local planned-spend reprioritisation and reserve
+top-up. Those records are finance-model entries only, not real transfers,
+invoices, FIA Relevant Costs, or evidence of a completed repair. The local
+source-capacity calculation excludes future-car-labelled commitments, and the local audit
+shows the negative reprioritisation separately so it reconciles with the
+positive modelled repair charge. Financial
+entries may exceed the gameplay cap. Any fine,
 aerodynamic-development reduction, or audit-only points deduction shown in the
 post-season review is an application rule and does not alter the historic 2025
 standings.

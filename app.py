@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import career_engine as season
+import safety_engine
 from career_data import CALENDAR, CAP, CATEGORIES, TEAMS, canonical_driver_id, driver_directory, drivers_for_team_round, portrait_path
 
 DB = Path(__file__).with_name("f1_budget.db")
@@ -298,20 +299,33 @@ def render_incident_decisions(con):
         return
     state = season.active_state(con)
     team = TEAMS[state["team_id"]]
-    st.markdown("#### Historical repair planning")
-    st.warning("These are historical 2025 event records for your selected team. Repair choices change the budget ledger, not the replayed classification.")
-    st.caption("This records a local finance-planning decision from a historical incident. It is not an engineering repair instruction, vehicle-safety certification, or FIA decision.")
+    historical_count = sum(incident.get("kind") != "manual" for incident in incidents)
+    manual_count = len(incidents) - historical_count
+    st.markdown("#### Repair planning records")
+    if historical_count:
+        st.warning("Historical 2025 event records below are read-only evidence. Repair choices change the local budget ledger, not the replayed classification.")
+    if manual_count:
+        st.info("Local manual entries below are user-entered planning records, not historical incident evidence.")
+    st.caption("This records a local finance-planning decision. It is not an engineering repair instruction, vehicle-safety certification, or FIA decision.")
     for incident in incidents:
-        title = f"{incident.get('session_name') or 'Weekend'} · {incident['title']}"
+        is_manual = incident.get("kind") == "manual"
+        title = (
+            f"Local manual entry · {incident['title']}" if is_manual
+            else f"{incident.get('session_name') or 'Weekend'} · {incident['title']}"
+        )
         with st.expander(title, expanded=incident["state"] == "pending"):
-            driver = historic_driver(incident.get("driver_id"), incident.get("title", "Driver").split(" · ")[0])
-            left, right = st.columns([.16, .84])
-            with left:
-                show_portrait(driver, team, 54)
-            with right:
-                st.caption(driver["name"])
-            st.write(incident.get("reason") or "Historical event record.")
-            st.caption(f"Responsible party: {incident.get('responsible') or 'Not officially assigned'}")
+            if is_manual:
+                st.info("User-entered local planning record. It has no historical-source or engineering-status claim.")
+                st.write(incident.get("reason") or "Local manual repair event.")
+            else:
+                driver = historic_driver(incident.get("driver_id"), incident.get("title", "Driver").split(" · ")[0])
+                left, right = st.columns([.16, .84])
+                with left:
+                    show_portrait(driver, team, 54)
+                with right:
+                    st.caption(driver["name"])
+                st.write(incident.get("reason") or "Historical event record.")
+                st.caption(f"Responsible party: {incident.get('responsible') or 'Not officially assigned'}")
             st.caption(f"Damage area: {incident.get('components') or 'Not publicly confirmed'}")
             source_url = incident.get("source_url") or incident.get("source")
             if source_url and str(source_url).startswith("http"):
@@ -325,7 +339,8 @@ def render_incident_decisions(con):
             low, high = float(incident.get("cost_low", 0)), float(incident.get("cost_high", 0))
             if high <= 0:
                 if bool(incident.get("safety_critical")):
-                    st.error("Project critical-repair flag: the replay needs a source-limitation acknowledgement before the next race. The public record does not support a cost estimate.")
+                    st.error("Project critical-repair flag: the historical replay needs a source-limitation acknowledgement before the next race. The public record does not support a cost estimate.")
+                    st.caption("This lets the locked replay continue; it does not establish repair completion, readiness, or a vehicle release in the separate prototype planner.")
                     action_label, action = "Acknowledge source limitation", "source_limited"
                 else:
                     st.info("A repair was required, but public sources do not support a cost range. Record it without a fabricated invoice.")
@@ -650,17 +665,337 @@ def render_season_ledger(con, state):
                 rerun_app()
 
 
-def render_safety_planning(con, state):
-    """Show the evidence available for the next safety-planning phase.
+def render_prototype_repair_planner(con, snapshot):
+    """Render the separate, editable prototype decision workflow.
 
-    This deliberately remains a record-and-boundary view until source data or
-    user-approved prototype assumptions can support a real planning model.
+    It intentionally records a local planning review request, never a vehicle
+    release. Historical incidents are optional context only and are stored as a
+    text reference rather than a mutable link to the replay data.
     """
+    try:
+        assumptions = safety_engine.load_assumptions()
+    except safety_engine.AssumptionError as error:
+        st.error(f"Prototype planner unavailable: {error}")
+        st.caption("Historical evidence remains available below; restore a valid local assumptions file to use the prototype planner.")
+        return
+    profiles = assumptions["profiles"]
+    if not profiles:
+        st.error("The local prototype assumptions file has no planning profiles to compare.")
+        return
+
+    st.subheader("Prototype Repair Planner")
+    st.warning(
+        "Fictional, editable prototype assumptions. This planner is not a team procedure, FIA rule, engineering instruction, certification, prediction, or safe-to-race decision."
+    )
+    st.caption(
+        "It changes only the local prototype finance ledger after an explicit funding action. The locked 2025 classifications, points, standings, and incident source record are never changed."
+    )
+    st.info(assumptions.get("notice", "Every prototype input is an editable, non-verified assumption."))
+
+    source_items = [("prototype:demo", "Prototype demo case — no historical claim", None)]
+    for record in snapshot["historical_records"]:
+        source_items.append((
+            f"historical:{record['id']}",
+            f"Historical context · Round {record['round_number']} · {record['title']}",
+            record,
+        ))
+    for record in snapshot["manual_records"]:
+        source_items.append((
+            f"local:{record['id']}",
+            f"Local manual context · Round {record['round_number']} · {record['title']}",
+            record,
+        ))
+    source_labels = {item[0]: item[1] for item in source_items}
+    source_lookup = {item[0]: item[2] for item in source_items}
+    source_ref = st.selectbox(
+        "Case context (reference only)", list(source_labels),
+        format_func=lambda value: source_labels[value], key="prototype_source_ref",
+        help="Choosing historical context does not import repair facts into the model or modify that record.",
+    )
+    source_record = source_lookup[source_ref]
+    source_scope = "".join(character if character.isalnum() else "_" for character in source_ref)
+    source_context = {
+        "reference": source_ref,
+        "display_label": source_labels[source_ref],
+        "kind": "prototype_demo" if source_ref == "prototype:demo" else (
+            "historical_context" if source_ref.startswith("historical:") else "local_manual_context"
+        ),
+    }
+    if source_record:
+        source_context.update({
+            "record_id_at_selection": source_record.get("id"),
+            "round_number": source_record.get("round_number"),
+            "historical_title": source_record.get("title"),
+            "source_url": source_record.get("source_url"),
+            "components": source_record.get("components"),
+            "record_state_at_selection": source_record.get("state"),
+        })
+        st.caption(
+            f"Context only: {source_record.get('components') or 'No public component detail'} · "
+            f"record state: {str(source_record.get('state') or '').replace('_', ' ')}."
+        )
+        if source_record.get("safety_critical") and source_record.get("state") == "source_limited":
+            st.warning(
+                "This historical record was acknowledged for replay continuity because public cost evidence was unavailable. "
+                "That does not establish repair completion, readiness, or prototype review eligibility here."
+            )
+    st.caption(f"Active immutable source snapshot: {source_context['display_label']}")
+
+    profile_ids = [profile["id"] for profile in profiles]
+    profile_labels = {profile["id"]: profile["label"] for profile in profiles}
+    profile_id = st.selectbox(
+        "Editable prototype scenario", profile_ids,
+        format_func=lambda value: profile_labels[value], key=f"prototype_profile_{source_scope}",
+    )
+    profile = safety_engine.profile_for(profile_id, profiles)
+    option_ids = [option["id"] for option in profile.get("options", [])]
+    option_labels = {option["id"]: option["label"] for option in profile.get("options", [])}
+    option_id = st.selectbox(
+        "Response option to review", option_ids,
+        format_func=lambda value: option_labels[value], key=f"prototype_option_{source_scope}_{profile_id}",
+    )
+    option = safety_engine.option_for(profile, option_id)
+    st.markdown("#### Editable selected-option modelled estimates")
+    first, second, third = st.columns(3)
+    option_cost = first.number_input(
+        "Editable assumed response cost (CAD)", min_value=0.0, step=50_000.0,
+        value=float(option.get("estimated_cost_cad", 0)),
+        key=f"prototype_option_cost_{source_scope}_{profile_id}_{option_id}",
+    )
+    option_hours = second.number_input(
+        "Editable assumed response work hours", min_value=0.0, step=0.5,
+        value=float(option.get("estimated_work_hours", 0)),
+        key=f"prototype_option_hours_{source_scope}_{profile_id}_{option_id}",
+    )
+    option_spares = third.number_input(
+        "Editable assumed response spares needed", min_value=0, step=1,
+        value=int(option.get("spares_required", 0)),
+        key=f"prototype_option_spares_{source_scope}_{profile_id}_{option_id}",
+    )
+    option_overrides = {
+        option_id: {
+            "estimated_cost_cad": option_cost,
+            "estimated_work_hours": option_hours,
+            "spares_required": option_spares,
+        }
+    }
+    st.caption(
+        "These are editable, non-verified modelled estimates for this local case. They are snapshotted when recorded and never rewrite the bundled historical data or the catalog file."
+    )
+    case_title = st.text_input(
+        "Local planning-record title", f"{profile['label']} — {option['label']}",
+        key=f"prototype_title_{source_scope}_{profile_id}_{option_id}",
+    )
+    st.caption(option.get("description", ""))
+
+    finance = season.finance_summary(con)
+    reserve_before = float(finance["crash_contingency"]["remaining"])
+    cap_headroom = max(0.0, float(finance["remaining"]))
+    first, second, third = st.columns(3)
+    available_spares = first.number_input(
+        "Editable assumed spare count", min_value=0, step=1,
+        value=int(profile.get("default_available_spares", 0)),
+        key=f"prototype_spares_{source_scope}_{profile_id}",
+    )
+    hours_available = second.number_input(
+        "Editable assumed hours to next session", min_value=0.0, step=0.5,
+        value=float(profile.get("default_hours_to_next_session", 0)),
+        key=f"prototype_hours_{source_scope}_{profile_id}",
+    )
+    reserve_floor = third.number_input(
+        "Editable local reserve floor (CAD)", min_value=0.0, step=50_000.0,
+        value=float(profile.get("default_reserve_floor_cad", 0)),
+        key=f"prototype_floor_{source_scope}_{profile_id}",
+    )
+
+    funding_source = st.selectbox(
+        "Local planned-spend source to reprioritise", CATEGORIES,
+        key=f"prototype_funding_source_{source_scope}_{profile_id}",
+        help="This is a local current-season planning source; future-car commitments are excluded. On funding, the app records a matching negative local allocation entry; it does not alter real team spending.",
+    )
+    source_capacity = season.funding_source_capacity(con, funding_source)
+    capacity_key = f"prototype_capacity_{source_scope}_{profile_id}_{funding_source}"
+    if capacity_key not in st.session_state or st.session_state[capacity_key] > source_capacity:
+        st.session_state[capacity_key] = source_capacity
+    funding_capacity = st.number_input(
+        "Editable planning availability from selected source (CAD)", min_value=0.0,
+        max_value=float(source_capacity), step=50_000.0, key=capacity_key,
+        help="Cannot exceed the selected source's local planned spend. Lower it to model a protected R&D or operations commitment.",
+    )
+
+    preliminary_inputs = {
+        "available_spares": available_spares,
+        "hours_available": hours_available,
+        "reserve_before": reserve_before,
+        "reserve_floor": reserve_floor,
+        "planned_transfer": 0.0,
+        "funding_capacity": funding_capacity,
+        "cap_headroom": cap_headroom,
+        "funding_source": funding_source,
+        "completed_actions": [],
+        "option_overrides": option_overrides,
+    }
+    preliminary = safety_engine.evaluate_option(profile, option_id, preliminary_inputs)
+    transfer_key = f"prototype_transfer_{source_scope}_{profile_id}_{option_id}_{funding_source}"
+    if transfer_key not in st.session_state:
+        st.session_state[transfer_key] = 0.0
+    if st.button("Use calculated transfer needed for this option", key=f"use_transfer_{source_scope}_{profile_id}_{option_id}_{funding_source}"):
+        st.session_state[transfer_key] = preliminary["transfer_required_cad"]
+    planned_transfer = st.number_input(
+        "Editable planned transfer into local crash reserve (CAD)", min_value=0.0,
+        step=50_000.0, key=transfer_key,
+        help="The tool blocks the plan if this cannot protect the selected reserve floor or exceeds the selected source capacity.",
+    )
+
+    st.markdown("#### Compare modelled response options")
+    comparison_inputs = dict(preliminary_inputs)
+    comparison_inputs["planned_transfer"] = planned_transfer
+    comparison_inputs["completed_actions"] = [
+        action.get("id") for candidate in profile.get("options", [])
+        for action in candidate.get("required_actions", []) if action.get("id")
+    ]
+    comparison = safety_engine.compare_options(profile, comparison_inputs)
+    comparison_rows = []
+    for result in comparison:
+        comparison_rows.append({
+            "Option": result["option_label"],
+            "Planning state": result["status"].replace("_", " "),
+            "Assumed cost": result["estimated_cost_cad"],
+            "Assumed work hours": result["estimated_work_hours"],
+            "Assumed spares": result["spares_required"],
+            "Required transfer": result["transfer_required_cad"],
+            "Projected reserve": result["projected_reserve_cad"],
+            "Net local cap change": result["net_cap_change_cad"],
+            "Reason held": " · ".join(result["blockers"]) or "—",
+        })
+    show_table(cad_table(
+        pd.DataFrame(comparison_rows),
+        money_columns=("Assumed cost", "Required transfer", "Projected reserve", "Net local cap change"),
+    ))
+    st.caption(
+        "The comparison assumes each option's listed human-record actions would be completed. The selected option is rechecked below against the checkboxes you actually provide."
+    )
+
+    st.markdown("#### Selected option: human-record checklist")
+    completed_actions = []
+    for action in option.get("required_actions", []):
+        action_id = str(action.get("id") or "action")
+        if st.checkbox(
+            action.get("label", action_id), key=f"prototype_action_{source_scope}_{profile_id}_{option_id}_{action_id}",
+            help="This records only a user-confirmed prototype checklist item; it is not independently verified.",
+        ):
+            completed_actions.append(action_id)
+    selected_inputs = dict(preliminary_inputs)
+    selected_inputs["planned_transfer"] = planned_transfer
+    selected_inputs["completed_actions"] = completed_actions
+    evaluation = safety_engine.evaluate_option(profile, option_id, selected_inputs)
+    first, second, third, fourth = st.columns(4)
+    first.metric("Assumed plan cost", money(evaluation["estimated_cost_cad"]))
+    second.metric("Local reserve after model", money(evaluation["projected_reserve_cad"]))
+    third.metric("Local cap change", signed_money(evaluation["net_cap_change_cad"]))
+    fourth.metric("Planning state", evaluation["status"].replace("_", " "))
+    st.caption(
+        f"Derived local finance context: reserve before {money(reserve_before)} · local cap headroom {money(cap_headroom)} · "
+        f"maximum selected-source capacity {money(source_capacity)}."
+    )
+    if evaluation["eligible_for_review"]:
+        st.success(
+            "REVIEW ELIGIBLE — the editable prototype constraints and stated human-record checklist are complete. Human engineering review is still required; this is not a car release."
+        )
+    else:
+        st.error("HOLD — do not submit this prototype plan for review until every listed blocker is resolved.")
+        for blocker in evaluation["blockers"]:
+            st.write(f"- {blocker}")
+
+    record_label = "Record prototype review candidate" if evaluation["eligible_for_review"] else "Record held prototype plan"
+    if st.button(record_label, key=f"record_prototype_{source_scope}_{profile_id}_{option_id}"):
+        try:
+            record = season.record_safety_decision(
+                con, source_ref, case_title, source_context, funding_source, profile_id, option_id, selected_inputs
+            )
+        except ValueError as error:
+            st.error(str(error))
+        else:
+            if record["created"]:
+                st.success(f"Prototype planning record #{record['id']} saved. No funding was committed by this action.")
+            else:
+                st.info(f"Matching prototype planning record #{record['id']} already exists; no duplicate was created.")
+            rerun_app()
+
+    st.markdown("#### Saved prototype records and local funding")
+    decisions = season.safety_decisions(con)
+    if not decisions:
+        st.info("No prototype planning records have been saved yet.")
+    else:
+        decision_rows = []
+        for decision in decisions:
+            recorded = decision.get("snapshot", {})
+            context = decision.get("source_context", {})
+            decision_rows.append({
+                "Record": decision["id"],
+                "Round": decision["round_number"],
+                "Local title": decision["source_label"],
+                "Immutable source context": context.get("display_label") or decision.get("source_ref") or "Not recorded",
+                "Option": recorded.get("option_label", decision["option_id"]),
+                "State": str(decision["status"]).replace("_", " "),
+                "Assumed cost": recorded.get("estimated_cost_cad", 0),
+                "Funding ledger": decision.get("repair_ledger_id") or "Not committed",
+            })
+        show_table(cad_table(pd.DataFrame(decision_rows), money_columns=("Assumed cost",)))
+        st.caption(
+            "A funding checkbox cannot fund a plan. Only the button below records the modelled repair cost, the matching source reprioritisation, and the local reserve top-up."
+        )
+        for decision in decisions:
+            context = decision.get("source_context", {})
+            if context:
+                context_line = context.get("display_label") or decision.get("source_ref") or "Prototype context"
+                if context.get("source_url") and str(context["source_url"]).startswith(("https://", "http://")):
+                    st.caption(f"Record #{decision['id']} source snapshot: {context_line} · [saved source link]({context['source_url']})")
+                else:
+                    st.caption(f"Record #{decision['id']} source snapshot: {context_line}")
+            if decision["status"] == "REVIEW_ELIGIBLE" and decision.get("repair_ledger_id") is None:
+                if st.button(
+                    f"Commit modelled funding and request human review · record #{decision['id']}",
+                    key=f"fund_prototype_{decision['id']}",
+                ):
+                    try:
+                        funded = season.fund_safety_decision(con, decision["id"])
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        if funded["already_funded"]:
+                            st.info("That modelled funding record already exists; it was not charged twice.")
+                        else:
+                            st.success(
+                                f"Local modelled funding recorded once in ledger entry #{funded['repair_ledger_id']}. "
+                                "The plan is now REVIEW REQUESTED; human engineering review remains required."
+                            )
+                        rerun_app()
+            elif decision["status"] == "HOLD" and decision.get("blockers"):
+                st.caption(f"Record #{decision['id']} remains held: {' '.join(decision['blockers'])}")
+
+    current_finance = season.finance_summary(con)
+    st.markdown("#### Tangerine resource view")
+    first, second, third, fourth = st.columns(4)
+    first.metric("Local cap remaining", money(current_finance["remaining"]))
+    second.metric("Crash reserve remaining", money(current_finance["crash_contingency"]["remaining"]))
+    second.caption("Includes committed prototype repair-plan charges.")
+    third.metric("Selected source capacity", money(season.funding_source_capacity(con, funding_source)))
+    fourth.metric("Prototype plans recorded", len(decisions))
+    st.caption(
+        "This is the Tangerine trade-off: a plan can consume reserve and cap headroom, or explicitly reprioritise a limited local R&D/operations allocation. It never changes historic race performance or claims a real financial result."
+    )
+
+
+def render_safety_planning(con, state):
+    """Keep prototype planning separate from locked historical evidence."""
     snapshot = season.safety_planning_snapshot(con)
     if not snapshot:
         st.info("Start an exact replay to view its historical incident evidence.")
         return
-    st.subheader("Safety planning foundation")
+    render_prototype_repair_planner(con, snapshot)
+    st.markdown("---")
+    st.subheader("Historical evidence and data boundary")
     st.caption(
         "Historical records remain locked. This screen does not issue a safety release, prescribe a repair, or change a 2025 result."
     )
@@ -748,16 +1083,18 @@ def render_safety_planning(con, state):
         )
     with right:
         st.markdown(
-            """**Not yet modelled**
+            """**Not verified in the historical record**
 
 - Verified spare inventory or component condition.
 - Repair duration, staffing, inspection/sign-off, or release approval.
 - Risk probabilities, a readiness score, predicted incidents, or a safe-to-race outcome.
+
+The separate Prototype Repair Planner above uses clearly labelled editable assumptions for selected parts/time/cost/checklist scenarios. Those assumptions do not turn into verified historical facts.
 """
         )
     readiness_model = snapshot["readiness_model"]
     st.info(f"Readiness outcome unavailable: {readiness_model['reason']}")
-    st.caption("Use Race control to record the existing local repair-finance decision. A later, separate phase can add editable, clearly labelled prototype assumptions after data review.")
+    st.caption("Use Race control for the existing replay repair-finance record. Use the separate Prototype Repair Planner above for transparent, editable model assumptions; neither workflow authorises a vehicle release.")
 
 
 def render_audit(con):
@@ -783,6 +1120,7 @@ def render_audit(con):
     with left:
         st.markdown("##### Line-item breakdown")
         show_table(cad_table(pd.DataFrame(audit["financial_lines"]), money_columns=("Amount",)))
+        st.caption("A negative Prototype source reprioritisation is a local planning offset that balances a separately shown modelled repair charge; these lines reconcile to the local cap spend only.")
     with right:
         st.markdown("##### Cap spend by category")
         show_table(cad_table(pd.DataFrame(audit["category_lines"]), money_columns=("Cap spend",)))

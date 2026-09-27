@@ -1,0 +1,128 @@
+{
+  "model_name": "Prototype repair-planning assumptions",
+  "version": "1.0",
+  "notice": "Every cost, duration, spare count, reserve floor, action, and gate in this file is an editable educational prototype assumption and modelled estimate. It is not an FIA rule, team procedure, engineering instruction, certification, or safe-to-race decision.",
+  "profiles": [
+    {
+      "id": "suspension_steering",
+      "label": "Suspension / steering scenario",
+      "description": "Fictional planning scenario for comparing a held case against two assumed response plans.",
+      "ledger_category": "Chassis / structures",
+      "default_available_spares": 1,
+      "default_hours_to_next_session": 10,
+      "default_reserve_floor_cad": 1000000,
+      "options": [
+        {
+          "id": "hold_for_inspection",
+          "label": "Hold for inspection only",
+          "description": "Deliberately remains blocked; it demonstrates that deferring the response cannot request a prototype review.",
+          "estimated_cost_cad": 250000,
+          "estimated_work_hours": 2,
+          "spares_required": 0,
+          "can_request_review": false,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"}
+          ]
+        },
+        {
+          "id": "assumed_spare_replacement",
+          "label": "Assumed inspection and spare replacement",
+          "description": "Prototype option with an assumed spare, work window, and human-record checklist.",
+          "estimated_cost_cad": 1500000,
+          "estimated_work_hours": 8,
+          "spares_required": 1,
+          "can_request_review": true,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"},
+            {"id": "work_recorded", "label": "Prototype work-completion record added"}
+          ]
+        },
+        {
+          "id": "assumed_expedited_response",
+          "label": "Assumed expedited response",
+          "description": "Prototype option with a shorter assumed work window and greater spare/cost demand.",
+          "estimated_cost_cad": 2400000,
+          "estimated_work_hours": 4,
+          "spares_required": 2,
+          "can_request_review": true,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"},
+            {"id": "work_recorded", "label": "Prototype work-completion record added"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "brake_system",
+      "label": "Brake-system concern scenario",
+      "description": "Fictional planning scenario used only to exercise the decision workflow.",
+      "ledger_category": "Other",
+      "default_available_spares": 1,
+      "default_hours_to_next_session": 8,
+      "default_reserve_floor_cad": 1500000,
+      "options": [
+        {
+          "id": "hold_for_review",
+          "label": "Hold for review only",
+          "description": "Deliberately remains blocked and cannot request a prototype review.",
+          "estimated_cost_cad": 300000,
+          "estimated_work_hours": 2,
+          "spares_required": 0,
+          "can_request_review": false,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"}
+          ]
+        },
+        {
+          "id": "assumed_component_plan",
+          "label": "Assumed component response",
+          "description": "Prototype option with assumed cost, time, parts, and human-record checklist.",
+          "estimated_cost_cad": 1800000,
+          "estimated_work_hours": 6,
+          "spares_required": 1,
+          "can_request_review": true,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"},
+            {"id": "work_recorded", "label": "Prototype work-completion record added"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bodywork_structures",
+      "label": "Bodywork / structures scenario",
+      "description": "Fictional planning scenario used to show a lower-cost resource trade-off.",
+      "ledger_category": "Chassis / structures",
+      "default_available_spares": 1,
+      "default_hours_to_next_session": 12,
+      "default_reserve_floor_cad": 750000,
+      "options": [
+        {
+          "id": "hold_for_review",
+          "label": "Hold for review only",
+          "description": "Deliberately remains blocked and cannot request a prototype review.",
+          "estimated_cost_cad": 150000,
+          "estimated_work_hours": 1,
+          "spares_required": 0,
+          "can_request_review": false,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"}
+          ]
+        },
+        {
+          "id": "assumed_replacement_plan",
+          "label": "Assumed replacement response",
+          "description": "Prototype option with assumed cost, time, parts, and human-record checklist.",
+          "estimated_cost_cad": 900000,
+          "estimated_work_hours": 7,
+          "spares_required": 1,
+          "can_request_review": true,
+          "required_actions": [
+            {"id": "inspection_logged", "label": "Human inspection record added"},
+            {"id": "work_recorded", "label": "Prototype work-completion record added"}
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -6,10 +6,12 @@ decisions remain interactive, but they never alter a replayed race result.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import date
 from statistics import median
 
+import safety_engine
 from career_data import (
     CAP,
     CALENDAR,
@@ -91,6 +93,17 @@ def migrate(con):
         CREATE TABLE IF NOT EXISTS career_preferences (
             key TEXT PRIMARY KEY, value TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS career_safety_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            round_number INTEGER NOT NULL, source_ref TEXT,
+            source_label TEXT NOT NULL, source_context_json TEXT NOT NULL DEFAULT '{}',
+            profile_id TEXT NOT NULL,
+            option_id TEXT NOT NULL, funding_source TEXT,
+            status TEXT NOT NULL, blockers_json TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL, repair_ledger_id INTEGER,
+            transfer_ledger_id INTEGER, funded_at TEXT,
+            review_requested_at TEXT, created_at TEXT NOT NULL
+        );
         """
     )
     for table, name, definition in (
@@ -110,6 +123,11 @@ def migrate(con):
         ("career_incidents", "chosen_amount", "REAL NOT NULL DEFAULT 0"),
         ("career_incidents", "source_url", "TEXT"),
         ("career_incidents", "reviewed_at", "TEXT"),
+        ("career_safety_decisions", "repair_ledger_id", "INTEGER"),
+        ("career_safety_decisions", "transfer_ledger_id", "INTEGER"),
+        ("career_safety_decisions", "funded_at", "TEXT"),
+        ("career_safety_decisions", "review_requested_at", "TEXT"),
+        ("career_safety_decisions", "source_context_json", "TEXT NOT NULL DEFAULT '{}'"),
     ):
         _add_column(con, table, name, definition)
     _backfill_ledger_effects(con)
@@ -124,14 +142,14 @@ def active_state(con):
 def reset_career(con):
     for table in (
         "career_state", "career_allocations", "career_ledger", "career_sessions",
-        "career_standings", "career_incidents", "career_preferences",
+        "career_standings", "career_incidents", "career_preferences", "career_safety_decisions",
     ):
         con.execute(f"DELETE FROM {table}")
     con.commit()
 
 
 def _insert_ledger(con, round_number, session_name, category, amount, kind, note, effect, future_car=0, counts_to_cap=True):
-    con.execute(
+    cursor = con.execute(
         """INSERT INTO career_ledger
         (round_number, session_name, category, amount, kind, note, future_car, created_at, effect, counts_to_cap)
         VALUES (?,?,?,?,?,?,?,?,?,?)""",
@@ -140,6 +158,7 @@ def _insert_ledger(con, round_number, session_name, category, amount, kind, note
             date.today().isoformat(), effect, int(counts_to_cap),
         ),
     )
+    return int(cursor.lastrowid)
 
 
 def _investment_effect(category, future_car):
@@ -168,7 +187,7 @@ def _backfill_ledger_effects(con):
         elif kind == "operating_base":
             effect = "Cap spend: modelled fixed operating base; historical replay results are unchanged."
         elif kind == "crash_reserve_allocation":
-            effect = f"Crash contingency: {money(item['amount'])} reserved for source-backed repairs."
+            effect = f"Crash contingency: {money(item['amount'])} reserved for local repair charges and explicitly committed prototype plans."
         elif kind.startswith("repair"):
             effect = "Local repair-finance record; historical replay results are unchanged."
         else:
@@ -208,7 +227,7 @@ def create_career(con, team_id, allocations, crash_reserve_target=5_000_000, swi
     _insert_ledger(
         con, 0, "Pre-season", "Other", max(0.0, float(crash_reserve_target)),
         "crash_reserve_allocation", "Dedicated crash contingency allocation",
-        f"Crash contingency: {money(crash_reserve_target)} reserved for source-backed repairs.",
+        f"Crash contingency: {money(crash_reserve_target)} reserved for local repair charges and explicitly committed prototype plans.",
         counts_to_cap=False,
     )
     _initialize_standings(con)
@@ -281,8 +300,11 @@ def crash_contingency(con):
     if not state:
         return {"target": 0.0, "used": 0.0, "remaining": 0.0, "uncovered": 0.0}
     used = float(con.execute(
-        """SELECT COALESCE(SUM(amount),0) FROM career_ledger
-        WHERE kind IN ('repair_full','repair_minimum','repair_custom','repair_manual','repair')"""
+        """SELECT COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END),0) FROM career_ledger
+        WHERE kind IN (
+            'repair_full','repair_minimum','repair_custom','repair_manual','repair',
+            'prototype_repair_plan'
+        )"""
     ).fetchone()[0])
     target = max(0.0, float(state.get("crash_reserve_target", 0)))
     return {
@@ -300,7 +322,7 @@ def set_crash_reserve(con, target):
     existing = con.execute(
         "SELECT id FROM career_ledger WHERE kind = 'crash_reserve_allocation' ORDER BY id LIMIT 1"
     ).fetchone()
-    effect = f"Crash contingency: {money(target)} reserved for source-backed repairs."
+    effect = f"Crash contingency: {money(target)} reserved for local repair charges and explicitly committed prototype plans."
     if existing:
         con.execute(
             "UPDATE career_ledger SET amount = ?, note = ?, effect = ? WHERE id = ?",
@@ -428,6 +450,9 @@ def rebase_active_replay(con):
     completed = max(0, min(len(CALENDAR), int(state["current_round"]) - 1))
     con.execute("DELETE FROM career_sessions")
     con.execute("DELETE FROM career_standings")
+    # Prototype decisions store an immutable text/source snapshot rather than a
+    # foreign key to the rebuilt incident rows, so their local audit trail and
+    # corresponding ledger entries remain internally consistent across a rebase.
     # Synthetic incidents cannot be reconciled with source-backed history.
     con.execute("DELETE FROM career_incidents")
     _initialize_standings(con)
@@ -442,7 +467,7 @@ def rebase_active_replay(con):
         (REPLAY_VERSION, reserve),
     )
     row = con.execute("SELECT id FROM career_ledger WHERE kind = 'crash_reserve_allocation' LIMIT 1").fetchone()
-    effect = f"Crash contingency: {money(reserve)} reserved for source-backed repairs."
+    effect = f"Crash contingency: {money(reserve)} reserved for local repair charges and explicitly committed prototype plans."
     if row:
         con.execute("UPDATE career_ledger SET amount = ?, note = ?, effect = ?, counts_to_cap = 0 WHERE id = ?", (reserve, "Dedicated crash contingency allocation", effect, row["id"]))
     else:
@@ -583,6 +608,271 @@ def safety_planning_snapshot(con):
     }
 
 
+def funding_source_capacity(con, category):
+    """Return local planned spend that can be explicitly reprioritised.
+
+    This is intentionally a local finance model: it represents planned R&D or
+    operating spend recorded in this app, minus earlier prototype
+    reprioritisations. It is not a team cash balance or an FIA accounting rule.
+    """
+    if category not in CATEGORIES:
+        raise ValueError("Choose a valid local funding source category.")
+    amount = float(con.execute(
+        """SELECT COALESCE(SUM(amount),0) FROM career_ledger
+        WHERE category = ? AND (
+            (kind IN ('preseason_rnd', 'upgrade') AND future_car = 0)
+            OR kind = 'prototype_funding_reallocation'
+        )""",
+        (category,),
+    ).fetchone()[0])
+    return max(0.0, amount)
+
+
+def _safety_snapshot_value(value, fallback):
+    """Decode an older malformed saved snapshot without crashing the app."""
+    return value if isinstance(value, dict) else fallback
+
+
+def _bounded_modelled_capacity(value, live_capacity):
+    """Keep a user-protected planning capacity, but never exceed live capacity.
+
+    Invalid values are deliberately passed through for the pure safety engine to
+    report as a HOLD input error instead of silently becoming an affordable
+    plan.
+    """
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return value
+    if not math.isfinite(numeric) or numeric < 0:
+        return value
+    return min(numeric, max(0.0, float(live_capacity)))
+
+
+def record_safety_decision(
+    con, source_ref, source_label, source_context, funding_source, profile_id, option_id, case_inputs
+):
+    """Re-evaluate and persist a local prototype planning record.
+
+    A caller cannot submit a hand-written ``REVIEW_ELIGIBLE`` object. The pure
+    rules engine calculates it again from the current, visibly editable inputs.
+    Repeated clicks with the same round/case/input snapshot are idempotent.
+    """
+    state = active_state(con)
+    if not state or state["status"] != "active":
+        raise ValueError("Start an active replay before recording a prototype planning decision.")
+    funding_source = str(funding_source or "")
+    if funding_source not in CATEGORIES:
+        raise ValueError("Choose a valid local funding source category.")
+    profile = safety_engine.profile_for(str(profile_id or ""))
+    # An invalid stale Streamlit option must never become a persistent record.
+    safety_engine.option_for(profile, str(option_id or ""))
+    inputs = dict(case_inputs) if isinstance(case_inputs, dict) else {}
+    # These values are never trusted from the UI. They are derived from the
+    # live local ledger at the instant the decision is recorded.
+    live_source_capacity = funding_source_capacity(con, funding_source)
+    inputs.update({
+        "funding_source": funding_source,
+        "reserve_before": crash_contingency(con)["remaining"],
+        "funding_capacity": _bounded_modelled_capacity(
+            inputs.get("funding_capacity"), live_source_capacity
+        ),
+        "live_source_capacity": live_source_capacity,
+        "cap_headroom": max(0.0, CAP - total_spend(con)),
+    })
+    evaluation = safety_engine.evaluate_option(profile, str(option_id), inputs)
+    snapshot_json = json.dumps(evaluation, sort_keys=True)
+    source_context_json = json.dumps(
+        source_context if isinstance(source_context, dict) else {}, sort_keys=True
+    )
+    common = (
+        int(state["current_round"]), str(source_ref or ""), str(source_label or "Prototype case"),
+        source_context_json, str(profile_id), str(option_id), funding_source, snapshot_json,
+    )
+    existing = con.execute(
+        """SELECT id FROM career_safety_decisions
+        WHERE round_number = ? AND source_ref = ? AND source_label = ?
+          AND source_context_json = ? AND profile_id = ? AND option_id = ?
+          AND funding_source = ? AND snapshot_json = ?
+        ORDER BY id DESC LIMIT 1""",
+        common,
+    ).fetchone()
+    if existing:
+        return {"id": int(existing["id"]), "evaluation": evaluation, "created": False}
+    cursor = con.execute(
+        """INSERT INTO career_safety_decisions
+        (round_number, source_ref, source_label, source_context_json, profile_id, option_id,
+         funding_source, status, blockers_json, snapshot_json, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            common[0], common[1], common[2], common[3], common[4], common[5], common[6],
+            evaluation["status"], json.dumps(evaluation["blockers"]), snapshot_json,
+            date.today().isoformat(),
+        ),
+    )
+    con.commit()
+    return {"id": int(cursor.lastrowid), "evaluation": evaluation, "created": True}
+
+
+def safety_decisions(con, limit=20):
+    """Return the newest saved prototype planning records with decoded evidence."""
+    rows = con.execute(
+        "SELECT * FROM career_safety_decisions ORDER BY id DESC LIMIT ?", (max(1, int(limit)),)
+    ).fetchall()
+    records = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["blockers"] = json.loads(item.pop("blockers_json"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["blockers"] = []
+            item.pop("blockers_json", None)
+        try:
+            item["snapshot"] = json.loads(item.pop("snapshot_json"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["snapshot"] = {}
+            item.pop("snapshot_json", None)
+        try:
+            item["source_context"] = json.loads(item.pop("source_context_json"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            item["source_context"] = {}
+            item.pop("source_context_json", None)
+        records.append(item)
+    return records
+
+
+def _live_safety_evaluation(con, decision):
+    """Re-check mutable local finance conditions immediately before funding."""
+    snapshot = _safety_snapshot_value(decision.get("snapshot"), {})
+    inputs = _safety_snapshot_value(snapshot.get("case_inputs"), {}).copy()
+    source = str(decision.get("funding_source") or "")
+    if source not in CATEGORIES:
+        raise ValueError("The saved prototype record does not have a valid funding source.")
+    live_source_capacity = funding_source_capacity(con, source)
+    inputs.update({
+        "funding_source": source,
+        "reserve_before": crash_contingency(con)["remaining"],
+        "funding_capacity": _bounded_modelled_capacity(
+            inputs.get("funding_capacity"), live_source_capacity
+        ),
+        "live_source_capacity": live_source_capacity,
+        "cap_headroom": max(0.0, CAP - total_spend(con)),
+    })
+    profile = safety_engine.profile_for(str(decision.get("profile_id") or ""))
+    return safety_engine.evaluate_option(profile, str(decision.get("option_id") or ""), inputs)
+
+
+def fund_safety_decision(con, decision_id):
+    """Commit one eligible prototype plan to the local ledger exactly once.
+
+    This creates a repair charge plus a matching local planning
+    reprioritisation. It affects only this app's cap/reserve ledger; it cannot
+    repair a real car, clear a historical incident, or change 2025 results.
+    """
+    try:
+        # Reserve the write lock before reading the funding state. A second
+        # Streamlit tab waits here, then sees the first tab's ledger ID instead
+        # of charging the same plan a second time.
+        con.execute("BEGIN IMMEDIATE")
+        state = active_state(con)
+        if not state or state["status"] != "active":
+            raise ValueError("Start an active replay before committing prototype funding.")
+        raw = con.execute(
+            "SELECT * FROM career_safety_decisions WHERE id = ?", (int(decision_id),)
+        ).fetchone()
+        if not raw:
+            raise ValueError("Choose a saved prototype planning record.")
+        raw_decision = dict(raw)
+        if raw_decision.get("repair_ledger_id") is not None:
+            result = {
+                "decision_id": int(raw_decision["id"]),
+                "repair_ledger_id": int(raw_decision["repair_ledger_id"]),
+                "transfer_ledger_id": raw_decision.get("transfer_ledger_id"),
+                "already_funded": True,
+            }
+            con.commit()
+            return result
+        if raw_decision.get("status") != "REVIEW_ELIGIBLE":
+            raise ValueError("Only a saved prototype review-eligible plan can receive local modelled funding.")
+        records = safety_decisions(con, limit=10_000)
+        decision = next((item for item in records if item["id"] == int(decision_id)), None)
+        if not decision:
+            raise ValueError("The saved prototype planning snapshot could not be read.")
+        evaluation = _live_safety_evaluation(con, decision)
+        if not evaluation["eligible_for_review"]:
+            con.execute(
+                "UPDATE career_safety_decisions SET status = ?, blockers_json = ? WHERE id = ?",
+                ("HOLD", json.dumps(evaluation["blockers"]), int(decision_id)),
+            )
+            con.commit()
+            raise ValueError("Local conditions changed; the plan is now held: " + " ".join(evaluation["blockers"]))
+
+        profile = safety_engine.profile_for(str(decision["profile_id"]))
+        repair_category = str(profile.get("ledger_category") or "Other")
+        if repair_category not in CATEGORIES:
+            repair_category = "Other"
+        source = str(decision["funding_source"])
+        cost = float(evaluation["estimated_cost_cad"])
+        transfer = float(evaluation["planned_transfer_cad"])
+        if cost <= 0:
+            raise ValueError("The selected prototype option has no positive modelled repair cost to commit.")
+
+        repair_ledger_id = _insert_ledger(
+            con, int(state["current_round"]), "Prototype repair planner", repair_category,
+            cost, "prototype_repair_plan",
+            f"Modelled prototype plan: {evaluation['profile_label']} — {evaluation['option_label']}",
+            "Editable prototype scenario cost recorded in the local ledger only; human review remains required and historical results are unchanged.",
+            counts_to_cap=True,
+        )
+        transfer_ledger_id = None
+        if transfer > 0:
+            transfer_ledger_id = _insert_ledger(
+                con, int(state["current_round"]), "Prototype repair planner", source,
+                -transfer, "prototype_funding_reallocation",
+                f"Modelled reprioritisation for prototype plan #{decision_id}",
+                f"Local planning transfer from {source}; it reduces only this app's planned-spend ledger and does not alter the historical replay.",
+                counts_to_cap=True,
+            )
+            _insert_ledger(
+                con, int(state["current_round"]), "Prototype repair planner", source,
+                transfer, "prototype_reserve_transfer",
+                f"Modelled reserve transfer for prototype plan #{decision_id}",
+                "Local prototype reserve top-up recorded for the selected planning floor; it is not real team accounting or a safety approval.",
+                counts_to_cap=False,
+            )
+            con.execute(
+                "UPDATE career_state SET crash_reserve_target = crash_reserve_target + ? WHERE id = 1",
+                (transfer,),
+            )
+        today = date.today().isoformat()
+        con.execute(
+            """UPDATE career_safety_decisions
+            SET status = ?, blockers_json = ?, repair_ledger_id = ?, transfer_ledger_id = ?,
+                funded_at = ?, review_requested_at = ?
+            WHERE id = ?""",
+            (
+                "REVIEW_REQUESTED", json.dumps([]), repair_ledger_id, transfer_ledger_id,
+                today, today, int(decision_id),
+            ),
+        )
+        con.commit()
+        return {
+            "decision_id": int(decision_id),
+            "repair_ledger_id": repair_ledger_id,
+            "transfer_ledger_id": transfer_ledger_id,
+            "already_funded": False,
+            "evaluation": evaluation,
+        }
+    except sqlite3.OperationalError as error:
+        if con.in_transaction:
+            con.rollback()
+        raise ValueError("The local prototype ledger is busy. Wait a moment and try funding once more.") from error
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        raise
+
+
 def resolve_incident(con, incident_id, choice, chosen_amount=None):
     row = con.execute("SELECT * FROM career_incidents WHERE id = ?", (incident_id,)).fetchone()
     if not row or row["state"] not in {"pending", "deferred"}:
@@ -708,7 +998,9 @@ def finance_summary(con):
         "breakdown": spend_by_category(con), "crash_tax": reserve["used"],
         "crash_contingency": reserve,
         "planned_rnd": float(con.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE kind IN ('preseason_rnd','upgrade') AND future_car = 0"
+            """SELECT COALESCE(SUM(amount),0) FROM career_ledger
+            WHERE (kind IN ('preseason_rnd','upgrade') AND future_car = 0)
+               OR kind = 'prototype_funding_reallocation'"""
         ).fetchone()[0]),
         "future_car": float(con.execute(
             "SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE future_car = 1"
@@ -768,14 +1060,27 @@ def audit(con):
         for category in CATEGORIES
     ]
     operating_base = sum(float(item["amount"]) for item in entries if item["kind"] == "operating_base")
+    current_commitments_before_reallocation = sum(
+        float(item["amount"])
+        for item in entries
+        if item["kind"] in {"preseason_rnd", "upgrade"} and not item["future_car"]
+    )
+    prototype_reallocation = sum(
+        float(item["amount"])
+        for item in entries if item["kind"] == "prototype_funding_reallocation"
+    )
     classified_repairs = summary["crash_tax"]
-    accounted = operating_base + summary["planned_rnd"] + summary["future_car"] + classified_repairs
+    accounted = (
+        operating_base + current_commitments_before_reallocation + prototype_reallocation
+        + summary["future_car"] + classified_repairs
+    )
     financial_lines = [
         {"Line item": "Modelled operating base", "Amount": operating_base},
-        {"Line item": "2025 development commitments", "Amount": summary["planned_rnd"]},
+        {"Line item": "2025 development / operations commitments", "Amount": current_commitments_before_reallocation},
+        {"Line item": "Prototype source reprioritisation", "Amount": prototype_reallocation},
         {"Line item": "Future-car commitments", "Amount": summary["future_car"]},
-        {"Line item": "Funded crash repairs", "Amount": classified_repairs},
-        {"Line item": "Other cap commitments", "Amount": max(0.0, summary["spend"] - accounted)},
+        {"Line item": "Funded crash repairs (including prototype plans)", "Amount": classified_repairs},
+        {"Line item": "Other cap commitments", "Amount": summary["spend"] - accounted},
         {"Line item": "Unspent crash contingency", "Amount": summary["crash_contingency"]["remaining"]},
     ]
     comparators = []

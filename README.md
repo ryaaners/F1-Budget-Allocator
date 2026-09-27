@@ -148,16 +148,57 @@ crash tax, planned investment, reserve use, cost per historic constructor
 point, breach result, and the 2026 carry-forward value. It compares the saved
 replay's constructor rank and points with the locally recorded 2025 outcome.
 
-### Safety planning foundation
+### Safety planning: evidence plus a separate prototype planner
 
-The **Safety planning** tab is an evidence view for the later planning phase.
-It brings together only the historical incident record, source links where
-available, project critical-repair flags, repair-record status, and the local
-crash-contingency ledger. It does not calculate a readiness score, predict
-risk, prescribe a repair, or issue a safe-to-race outcome. Verified spare
-inventory, repair durations, inspection/sign-off, and release approval are not
-included in the bundled public data and will remain unavailable until reviewed
-data or clearly labelled prototype assumptions are added separately.
+The **Safety planning** tab keeps two things separate:
+
+- **Historical evidence and data boundary** brings together only the read-only
+  incident record, source links where available, project critical-repair flags,
+  repair-record status, and the local crash-contingency ledger.
+- **Prototype Repair Planner** is a deliberately separate local scenario tool.
+  It lets a user compare editable assumed response options against assumed
+  spares, work time, reserve floor, local cap headroom, a selected local
+  R&D/operations funding source, and a user-confirmed human-record checklist.
+
+The planner returns only `HOLD`, `REVIEW_ELIGIBLE`, or `REVIEW_REQUESTED`.
+`REVIEW_ELIGIBLE` means the entered prototype values meet this app's transparent
+rules; `REVIEW_REQUESTED` means one explicit local-ledger funding action was
+recorded. Neither status is a vehicle release, repair instruction, safety
+certification, FIA finding, risk prediction, or safe-to-race verdict.
+
+Every cost, duration, spare count, reserve floor, checklist action, and gate is
+an editable educational assumption. The selected option's cost/work/spares and
+case resources can be changed in the planner; catalog defaults and checklist
+structure live in
+[`data/safety_planning_assumptions.json`](data/safety_planning_assumptions.json).
+They are not public-team inventory, repair invoices, validated engineering
+facts, or official FIA rules. The planner can store a historical incident as a
+text reference, but it never writes to the historical incident record or uses
+the public record as hidden repair data.
+
+Each saved prototype record keeps both a user-editable local title and an
+immutable snapshot of the selected context label (plus the bundled round/title/
+source-link details when present). It does not retain a foreign-key dependency
+on a replay incident row, so an exact-replay rebuild cannot silently retarget a
+past local decision to a different historical record.
+
+When the user explicitly commits funding, the app records one modelled repair
+charge and (where needed) a matching negative local planned-spend
+reprioritisation from the selected source. That makes the reserve/cap/R&D or
+operations trade-off visible in the local ledger. It does not move money in a
+real team, change any 2025 classification, or clear the historical replay's
+separate repair-record gate.
+
+Only local **current-season** planned commitments are available as an
+explicit funding source; future-car-labelled commitments are excluded. The
+final local audit shows a negative prototype-source reprioritisation beside the
+positive modelled repair charge so its displayed financial lines reconcile to
+the app's cap total.
+
+Before a live demo, run the focused browser checks in
+[`UI_QA_CHECKLIST.md`](UI_QA_CHECKLIST.md). The unit tests cover the pure rules
+and SQLite boundaries; the checklist is intentionally honest about requiring a
+real Streamlit session for widget-level verification.
 
 ## What investments do
 
