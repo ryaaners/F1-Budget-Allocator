@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -14,7 +16,9 @@ import career_engine as season
 import safety_engine
 from career_data import CALENDAR, CAP, CATEGORIES, TEAMS, canonical_driver_id, driver_directory, drivers_for_team_round, portrait_path
 
-DB = Path(__file__).with_name("f1_budget.db")
+# The optional override lets a demo/test run use a disposable SQLite copy rather
+# than mutating the repository's bundled example database.
+DB = Path(os.environ.get("F1_BUDGET_DB_PATH", Path(__file__).with_name("f1_budget.db")))
 DEFAULT_ALLOC = dict(zip(CATEGORIES, [48, 62, 32, 28, 18, 17, 10]))
 DEFAULT_RATES = dict(zip(CATEGORIES, [.18, .12, .10, .05, .04, .08, .02]))
 DEFAULT_FACTORS = dict(zip(CATEGORIES, [.95, .55, .80, .50, .65, 1.05, .35]))
@@ -665,6 +669,571 @@ def render_season_ledger(con, state):
                 rerun_app()
 
 
+def prototype_short_hash(value):
+    """Render a compact local provenance fingerprint without calling it proof."""
+    text = str(value or "")
+    return f"{text[:12]}…" if len(text) > 12 else (text or "not recorded")
+
+
+def prototype_gap_rows(gaps):
+    """Turn transparent rule gaps into a compact, non-engineering handoff table."""
+    rows = []
+    for gap in gaps or []:
+        if not isinstance(gap, dict):
+            continue
+        category = str(gap.get("category") or "model")
+
+        def display(value, column):
+            if value is None:
+                return "—"
+            if category in {"reserve", "funding_source", "cap"} and column in {
+                "required", "available", "shortfall",
+            }:
+                return money(value)
+            if category == "time" and column in {"required", "available", "shortfall"}:
+                return f"{float(value):,.1f} h"
+            if category == "spares" and column in {"required", "available", "shortfall"}:
+                return f"{int(value)}"
+            return str(value)
+
+        rows.append({
+            "Model condition": gap.get("label", gap.get("code", "Unspecified condition")),
+            "Required / expected": display(gap.get("required"), "required"),
+            "Currently entered": display(gap.get("available"), "available"),
+            "Gap / detail": display(gap.get("shortfall"), "shortfall")
+            if gap.get("shortfall") is not None else gap.get("detail", "—"),
+        })
+    return rows
+
+
+def render_prototype_gap_panel(evaluation, heading="What needs attention before you can save?"):
+    """Show the modelled resources/checklist conditions without directing repairs."""
+    gaps = evaluation.get("gaps", []) if isinstance(evaluation, dict) else []
+    if not gaps:
+        return
+    st.markdown(f"#### {heading}")
+    st.caption(
+        "This list explains why the values entered into the prototype are blocked. It covers modelled resources, "
+        "budget, or checklist gaps; it is not an engineering instruction or vehicle-release decision."
+    )
+    rows = prototype_gap_rows(gaps)
+    if rows:
+        show_table(pd.DataFrame(rows))
+
+
+def render_prototype_resource_tradeoff(evaluation):
+    """Make the local Orange Flag reserve/source/cap model easy to see live."""
+    if not isinstance(evaluation, dict) or "estimated_cost_cad" not in evaluation:
+        return
+    reserve_before = float(evaluation.get("reserve_before_cad", 0))
+    transfer = float(evaluation.get("planned_transfer_cad", 0))
+    cost = float(evaluation.get("estimated_cost_cad", 0))
+    source_before = float(evaluation.get("funding_capacity_cad", 0))
+    cap_before = float(evaluation.get("cap_headroom_cad", 0))
+    net_cap_change = float(evaluation.get("net_cap_change_cad", 0))
+
+    st.markdown("#### Local resource trade-off preview")
+    first, second = st.columns(2)
+    reserve_figure = go.Figure(go.Waterfall(
+        orientation="v",
+        measure=["absolute", "relative", "relative", "total"],
+        x=["Reserve before", "Modelled top-up", "Modelled repair", "Projected reserve"],
+        y=[reserve_before, transfer, -cost, 0],
+        text=[money(reserve_before), signed_money(transfer), signed_money(-cost), money(reserve_before + transfer - cost)],
+        textposition="outside",
+        connector={"line": {"color": "#64748b"}},
+        increasing={"marker": {"color": "#38bdf8"}},
+        decreasing={"marker": {"color": "#fb7185"}},
+        totals={"marker": {"color": "#22c55e"}},
+    ))
+    reserve_figure.update_layout(
+        title="Modelled crash-reserve path", height=320, margin=dict(l=10, r=10, t=45, b=10),
+        yaxis_title="CAD",
+    )
+    first.plotly_chart(reserve_figure, use_container_width=True)
+
+    cap_figure = go.Figure(go.Waterfall(
+        orientation="v",
+        measure=["absolute", "relative", "relative", "total"],
+        x=["Cap headroom before", "Modelled repair", "Source reprioritisation", "Cap headroom after"],
+        y=[cap_before, -cost, transfer, 0],
+        text=[
+            money(cap_before), signed_money(-cost), signed_money(transfer),
+            money(max(0, cap_before - net_cap_change)),
+        ],
+        textposition="outside",
+        connector={"line": {"color": "#64748b"}},
+        increasing={"marker": {"color": "#38bdf8"}},
+        decreasing={"marker": {"color": "#fb7185"}},
+        totals={"marker": {"color": "#a78bfa"}},
+    ))
+    cap_figure.update_layout(
+        title="Modelled cap-headroom path", height=320, margin=dict(l=10, r=10, t=45, b=10),
+        yaxis_title="CAD",
+    )
+    second.plotly_chart(cap_figure, use_container_width=True)
+
+
+def render_prototype_resource_contention(con, assumptions, finance):
+    """Render a read-only, two-case shared-resource preview.
+
+    This intentionally stays separate from saved decisions and funding.  It
+    lets a demo show the Orange Flag trade-off without suggesting that a
+    resource-envelope result authorises work, review, or vehicle use.
+    """
+    profiles = assumptions.get("profiles", []) if isinstance(assumptions, dict) else []
+    if len(profiles) < 2:
+        st.info("Add at least two valid fictional profiles to compare shared prototype resources.")
+        return
+
+    profile_ids = [profile["id"] for profile in profiles]
+    profile_labels = {profile["id"]: profile["label"] for profile in profiles}
+
+    def preferred_profile(preferred, fallback_index):
+        return preferred if preferred in profile_ids else profile_ids[fallback_index]
+
+    def review_option_id(profile):
+        for option in profile.get("options", []):
+            if option.get("can_request_review"):
+                return option["id"]
+        return profile["options"][0]["id"]
+
+    default_a_profile_id = preferred_profile("suspension_steering", 0)
+    default_b_profile_id = preferred_profile("bodywork_structures", 1)
+    default_a_profile = safety_engine.profile_for(default_a_profile_id, profiles)
+    default_b_profile = safety_engine.profile_for(default_b_profile_id, profiles)
+    default_a_option_id = review_option_id(default_a_profile)
+    default_b_option_id = review_option_id(default_b_profile)
+    default_a_option = safety_engine.option_for(default_a_profile, default_a_option_id)
+    default_b_option = safety_engine.option_for(default_b_profile, default_b_option_id)
+    reserve_now = float(finance["crash_contingency"]["remaining"])
+    cap_headroom_now = max(0.0, float(finance["remaining"]))
+    source_capacities = {
+        category: float(season.funding_source_capacity(con, category)) for category in CATEGORIES
+    }
+    strongest_source = max(CATEGORIES, key=lambda category: source_capacities[category])
+
+    def set_case(case_key, profile_id, option_id):
+        profile = safety_engine.profile_for(profile_id, profiles)
+        option = safety_engine.option_for(profile, option_id)
+        st.session_state[f"portfolio_{case_key}_profile"] = profile_id
+        st.session_state[f"portfolio_{case_key}_option_{profile_id}"] = option_id
+        st.session_state[f"portfolio_{case_key}_cost_{profile_id}_{option_id}"] = float(
+            option["estimated_cost_cad"]
+        )
+        st.session_state[f"portfolio_{case_key}_hours_{profile_id}_{option_id}"] = float(
+            option["estimated_work_hours"]
+        )
+        st.session_state[f"portfolio_{case_key}_spares_{profile_id}_{option_id}"] = int(
+            option["spares_required"]
+        )
+
+    def load_portfolio_example(kind):
+        """Change Streamlit input state only; do not write to SQLite in a callback."""
+        set_case("a", default_a_profile_id, default_a_option_id)
+        set_case("b", default_b_profile_id, default_b_option_id)
+        combined_cost = float(default_a_option["estimated_cost_cad"]) + float(
+            default_b_option["estimated_cost_cad"]
+        )
+        combined_hours = float(default_a_option["estimated_work_hours"]) + float(
+            default_b_option["estimated_work_hours"]
+        )
+        combined_spares = int(default_a_option["spares_required"]) + int(
+            default_b_option["spares_required"]
+        )
+        floor = max(
+            float(default_a_profile["default_reserve_floor_cad"]),
+            float(default_b_profile["default_reserve_floor_cad"]),
+        )
+        st.session_state["portfolio_shared_funding_source"] = strongest_source
+        st.session_state[f"portfolio_shared_capacity_{strongest_source}"] = source_capacities[strongest_source]
+        st.session_state["portfolio_shared_reserve_before"] = reserve_now
+        st.session_state["portfolio_shared_reserve_floor"] = floor
+        st.session_state["portfolio_shared_cap_headroom"] = cap_headroom_now
+        if kind == "contained":
+            st.session_state["portfolio_shared_spares"] = combined_spares
+            st.session_state["portfolio_shared_hours"] = combined_hours
+            st.session_state["portfolio_shared_transfer"] = max(0.0, combined_cost + floor - reserve_now)
+        else:
+            # Deliberately model a conflict: both cases exist, but the shared
+            # envelope cannot satisfy their combined demand.
+            st.session_state["portfolio_shared_spares"] = max(0, combined_spares - 1)
+            st.session_state["portfolio_shared_hours"] = max(0.0, combined_hours - 5.0)
+            st.session_state["portfolio_shared_transfer"] = 0.0
+
+    st.markdown("#### Optional: can the team handle two issues at once?")
+    st.caption(
+        "Use this quick check when two fictional issues need the same spare parts, work hours, reserve, and budget. "
+        "It adds both demands together once, then shows whether your entered shared pool is enough. It never creates a record, charge, repair instruction, or vehicle-release outcome."
+    )
+    first, second = st.columns(2)
+    first.button(
+        "Try a shared-resource conflict", key="portfolio_load_hold",
+        on_click=load_portfolio_example, args=("hold",),
+    )
+    second.button(
+        "Try a workable shared-resource example", key="portfolio_load_contained",
+        on_click=load_portfolio_example, args=("contained",),
+    )
+    st.caption("Start with the conflict example: it shows why two plans that look manageable alone may not fit together. Then try the workable example to see the same two plans fit the entered shared pool.")
+
+    first, second = st.columns(2)
+    with first:
+        st.markdown("**First fictional issue**")
+        case_a_profile_id = st.selectbox(
+            "First issue type", profile_ids,
+            index=profile_ids.index(default_a_profile_id),
+            format_func=lambda value: profile_labels[value], key="portfolio_a_profile",
+        )
+        case_a_profile = safety_engine.profile_for(case_a_profile_id, profiles)
+        case_a_option_ids = [option["id"] for option in case_a_profile["options"]]
+        case_a_option_labels = {option["id"]: option["label"] for option in case_a_profile["options"]}
+        case_a_default_option_id = review_option_id(case_a_profile)
+        case_a_option_id = st.selectbox(
+            "First response", case_a_option_ids,
+            index=case_a_option_ids.index(case_a_default_option_id),
+            format_func=lambda value: case_a_option_labels[value],
+            key=f"portfolio_a_option_{case_a_profile_id}",
+        )
+        case_a_option = safety_engine.option_for(case_a_profile, case_a_option_id)
+        case_a_cost = st.number_input(
+            "First assumed cost (CAD)", min_value=0.0, step=50_000.0,
+            value=float(case_a_option["estimated_cost_cad"]),
+            key=f"portfolio_a_cost_{case_a_profile_id}_{case_a_option_id}",
+        )
+        case_a_hours = st.number_input(
+            "First assumed work hours", min_value=0.0, step=0.5,
+            value=float(case_a_option["estimated_work_hours"]),
+            key=f"portfolio_a_hours_{case_a_profile_id}_{case_a_option_id}",
+        )
+        case_a_spares = st.number_input(
+            "First assumed spare parts", min_value=0, step=1,
+            value=int(case_a_option["spares_required"]),
+            key=f"portfolio_a_spares_{case_a_profile_id}_{case_a_option_id}",
+        )
+
+    with second:
+        st.markdown("**Second fictional issue**")
+        case_b_profile_id = st.selectbox(
+            "Second issue type", profile_ids,
+            index=profile_ids.index(default_b_profile_id),
+            format_func=lambda value: profile_labels[value], key="portfolio_b_profile",
+        )
+        case_b_profile = safety_engine.profile_for(case_b_profile_id, profiles)
+        case_b_option_ids = [option["id"] for option in case_b_profile["options"]]
+        case_b_option_labels = {option["id"]: option["label"] for option in case_b_profile["options"]}
+        case_b_default_option_id = review_option_id(case_b_profile)
+        case_b_option_id = st.selectbox(
+            "Second response", case_b_option_ids,
+            index=case_b_option_ids.index(case_b_default_option_id),
+            format_func=lambda value: case_b_option_labels[value],
+            key=f"portfolio_b_option_{case_b_profile_id}",
+        )
+        case_b_option = safety_engine.option_for(case_b_profile, case_b_option_id)
+        case_b_cost = st.number_input(
+            "Second assumed cost (CAD)", min_value=0.0, step=50_000.0,
+            value=float(case_b_option["estimated_cost_cad"]),
+            key=f"portfolio_b_cost_{case_b_profile_id}_{case_b_option_id}",
+        )
+        case_b_hours = st.number_input(
+            "Second assumed work hours", min_value=0.0, step=0.5,
+            value=float(case_b_option["estimated_work_hours"]),
+            key=f"portfolio_b_hours_{case_b_profile_id}_{case_b_option_id}",
+        )
+        case_b_spares = st.number_input(
+            "Second assumed spare parts", min_value=0, step=1,
+            value=int(case_b_option["spares_required"]),
+            key=f"portfolio_b_spares_{case_b_profile_id}_{case_b_option_id}",
+        )
+
+    st.markdown("**Resources shared by both issues**")
+    first, second, third, fourth = st.columns(4)
+    shared_spares = first.number_input(
+        "Shared spare parts available", min_value=0, step=1,
+        value=int(case_a_option["spares_required"]) + int(case_b_option["spares_required"]),
+        key="portfolio_shared_spares",
+    )
+    shared_hours = second.number_input(
+        "Shared work hours available", min_value=0.0, step=0.5,
+        value=float(case_a_option["estimated_work_hours"]) + float(case_b_option["estimated_work_hours"]),
+        key="portfolio_shared_hours",
+    )
+    shared_reserve_before = third.number_input(
+        "Shared reserve before (CAD)", min_value=0.0, step=50_000.0,
+        value=reserve_now, key="portfolio_shared_reserve_before",
+    )
+    shared_reserve_floor = fourth.number_input(
+        "Shared reserve to protect (CAD)", min_value=0.0, step=50_000.0,
+        value=max(
+            float(case_a_profile["default_reserve_floor_cad"]),
+            float(case_b_profile["default_reserve_floor_cad"]),
+        ),
+        key="portfolio_shared_reserve_floor",
+    )
+    shared_funding_source = st.selectbox(
+        "Shared budget area to move money from", CATEGORIES,
+        index=CATEGORIES.index(strongest_source), key="portfolio_shared_funding_source",
+        help="The source capacity below is bounded by the current local planned spend in this offline replay.",
+    )
+    selected_source_capacity = source_capacities[shared_funding_source]
+    capacity_key = f"portfolio_shared_capacity_{shared_funding_source}"
+    if capacity_key not in st.session_state or st.session_state[capacity_key] > selected_source_capacity:
+        st.session_state[capacity_key] = selected_source_capacity
+    first, second, third = st.columns(3)
+    shared_source_capacity = first.number_input(
+        "Shared amount available to move (CAD)", min_value=0.0,
+        max_value=selected_source_capacity, step=50_000.0, key=capacity_key,
+    )
+    shared_transfer = second.number_input(
+        "Shared budget move into reserve (CAD)", min_value=0.0, step=50_000.0,
+        value=0.0, key="portfolio_shared_transfer",
+    )
+    shared_cap_headroom = third.number_input(
+        "Shared local cap headroom (CAD)", min_value=0.0, step=50_000.0,
+        value=cap_headroom_now, key="portfolio_shared_cap_headroom",
+    )
+
+    cases = [
+        {
+            "case_id": "portfolio-case-a",
+            "case_label": f"Case A · {case_a_profile['label']} · {case_a_option['label']}",
+            "profile": case_a_profile,
+            "option_id": case_a_option_id,
+            "case_inputs": {"option_overrides": {case_a_option_id: {
+                "estimated_cost_cad": case_a_cost,
+                "estimated_work_hours": case_a_hours,
+                "spares_required": case_a_spares,
+            }}},
+        },
+        {
+            "case_id": "portfolio-case-b",
+            "case_label": f"Case B · {case_b_profile['label']} · {case_b_option['label']}",
+            "profile": case_b_profile,
+            "option_id": case_b_option_id,
+            "case_inputs": {"option_overrides": {case_b_option_id: {
+                "estimated_cost_cad": case_b_cost,
+                "estimated_work_hours": case_b_hours,
+                "spares_required": case_b_spares,
+            }}},
+        },
+    ]
+    portfolio = safety_engine.evaluate_resource_contention(cases, {
+        "available_spares": shared_spares,
+        "hours_available": shared_hours,
+        "reserve_before": shared_reserve_before,
+        "reserve_floor": shared_reserve_floor,
+        "planned_transfer": shared_transfer,
+        "funding_capacity": shared_source_capacity,
+        "cap_headroom": shared_cap_headroom,
+    })
+    totals = portfolio["totals"]
+    first, second, third, fourth = st.columns(4)
+    first.metric("Can these two entered plans fit together?", portfolio["status"].replace("_", " "))
+    second.metric("Combined assumed cost", money(totals["estimated_cost_cad"]))
+    third.metric("Shared spares", f"{totals['spares_required']} / {totals['available_spares']}")
+    fourth.metric("Shared work hours", f"{totals['estimated_work_hours']:.1f} / {totals['hours_available']:.1f}")
+    if portfolio["resource_feasible"]:
+        st.success(
+            "RESOURCE FEASIBLE — the two entered fictional plans fit this one shared modelled resource pool. "
+            "This only checks the entered accounting assumptions; it is not an approval, instruction, or safety finding."
+        )
+    else:
+        st.error(
+            "RESOURCE HOLD — the entered shared pool is not enough for both fictional plans together. "
+            "Read the gaps below; this preview does not record or suggest any action."
+        )
+        render_prototype_gap_panel(portfolio, heading="What is missing from the shared pool?")
+
+    case_rows = []
+    for row in portfolio["case_rows"]:
+        case_rows.append({
+            "Fictional case": row.get("case_label", row.get("case_id")),
+            "Portfolio state": str(row.get("state", "CASE HOLD")).replace("_", " "),
+            "Included in combined demand": "Yes" if row.get("included_in_aggregate") else "No",
+            "Assumed cost": row.get("estimated_cost_cad"),
+            "Assumed work hours": row.get("estimated_work_hours"),
+            "Assumed spares": row.get("spares_required"),
+            "Modelled condition": " · ".join(row.get("blockers") or []) or "—",
+        })
+    show_table(cad_table(pd.DataFrame(case_rows), money_columns=("Assumed cost",)))
+    st.caption(
+        f"Shared model snapshot: combined transfer need {money(totals['transfer_required_cad'])} · "
+        f"projected reserve {money(totals['projected_reserve_cad'])} · "
+        f"net local cap change {signed_money(totals['net_cap_change_cad'])}."
+    )
+    st.download_button(
+        "Download two-case modelled resource check (JSON)",
+        data=json.dumps(portfolio, indent=2, sort_keys=True, ensure_ascii=False),
+        file_name="prototype-two-case-resource-check.json", mime="application/json",
+        key="download_portfolio_resource_check",
+    )
+    st.caption(portfolio["disclaimer"])
+    st.caption(
+        f"Selected current-season source capacity: {money(selected_source_capacity)} · "
+        f"entered shared capacity: {money(shared_source_capacity)} → "
+        f"{money(max(0, shared_source_capacity - shared_transfer))} after the modelled reprioritisation. "
+        "Future-car commitments are excluded; this is not FIA or team accounting."
+    )
+
+
+def historical_context_fact_rows(context):
+    """Format the bounded preserved snapshot without looking up the incident again."""
+    facts = context.get("facts", {}) if isinstance(context, dict) else {}
+    estimate = facts.get("preexisting_local_estimate", {}) if isinstance(facts, dict) else {}
+    low = estimate.get("low_cad") if isinstance(estimate, dict) else None
+    high = estimate.get("high_cad") if isinstance(estimate, dict) else None
+    if low is None and high is None:
+        estimate_display = "Not recorded"
+    elif high is None or low == high:
+        estimate_display = f"CAD ${float(low if low is not None else high):,.0f} (pre-existing local estimate)"
+    else:
+        estimate_display = (
+            f"CAD ${float(low):,.0f} – CAD ${float(high):,.0f} "
+            "(pre-existing local estimate)"
+        )
+
+    def value(key, fallback="Not recorded"):
+        item = facts.get(key) if isinstance(facts, dict) else None
+        return item if item not in (None, "") else fallback
+
+    rows = [
+        {"App-preserved field": "Round", "Value at launch": value("round_number")},
+        {"App-preserved field": "Historical title", "Value at launch": value("title")},
+        {"App-preserved field": "Session", "Value at launch": value("session_name")},
+        {"App-preserved field": "Driver id", "Value at launch": value("driver_id")},
+        {"App-preserved field": "Incident kind", "Value at launch": value("incident_kind")},
+        {"App-preserved field": "Reported reason", "Value at launch": value("reason")},
+        {"App-preserved field": "Responsible party", "Value at launch": value("responsible")},
+        {"App-preserved field": "Damage area", "Value at launch": value("damage_area")},
+        {"App-preserved field": "Bundled source", "Value at launch": value("source")},
+        {"App-preserved field": "Source URL", "Value at launch": value("source_url")},
+        {
+            "App-preserved field": "Project repair-required flag",
+            "Value at launch": "Yes" if value("repair_required", False) else "No",
+        },
+        {
+            "App-preserved field": "Project critical flag",
+            "Value at launch": "Yes" if value("project_safety_critical", False) else "No",
+        },
+        {"App-preserved field": "App-local record state", "Value at launch": value("record_state_at_launch")},
+        {"App-preserved field": "App-local category", "Value at launch": value("app_local_category")},
+        {"App-preserved field": "Pre-existing local estimate", "Value at launch": estimate_display},
+        {
+            "App-preserved field": "Estimate label",
+            "Value at launch": estimate.get("label") if isinstance(estimate, dict) and estimate.get("label") else "Not recorded",
+        },
+    ]
+    # Streamlit 1.12's dataframe bridge infers each column from its first
+    # value.  Keeping this display-only table textual prevents a numeric round
+    # number from making later historical text values fail Arrow conversion.
+    return [
+        {"App-preserved field": str(row["App-preserved field"]), "Value at launch": str(row["Value at launch"])}
+        for row in rows
+    ]
+
+
+def selected_historical_context():
+    """Return a bounded launcher snapshot previously selected in this UI session."""
+    context = st.session_state.get("prototype_historical_source_context")
+    if not isinstance(context, dict):
+        return None
+    if (
+        context.get("schema") != season.HISTORICAL_INCIDENT_CONTEXT_SCHEMA
+        or context.get("origin") != season.HISTORICAL_INCIDENT_CONTEXT_ORIGIN
+        or not isinstance(context.get("facts"), dict)
+        or not context.get("sha256")
+    ):
+        return None
+    return context
+
+
+def render_historical_incident_launcher(snapshot):
+    """Offer a read-only bridge from qualifying evidence to an editable case."""
+    records = [
+        record for record in snapshot.get("historical_records", [])
+        if bool(record.get("repair_required"))
+    ]
+    st.markdown("#### Historical incident → prototype case")
+    st.caption(
+        "Choose a repair-required historical record only to preserve its available app-held context. "
+        "Launching never changes the incident record, creates a finance entry, or supplies repair facts."
+    )
+    st.info(
+        "Data boundary: the launcher preserves the displayed source context only. It does not establish a "
+        "repair method, cost, duration, spare inventory, component condition, inspection/sign-off, "
+        "completion, or vehicle-release decision."
+    )
+    if not records:
+        st.info("No repair-required historical incident record is available to launch in this replay yet.")
+        return selected_historical_context()
+
+    for record in records:
+        try:
+            context = season.historical_incident_source_context(record)
+        except ValueError as error:
+            st.warning(f"Historical incident context unavailable: {error}")
+            continue
+        facts = context["facts"]
+        title = context["display_label"]
+        with st.expander(title):
+            st.caption(
+                "Read-only app-preserved fields below are exactly what will be snapshotted if you launch this "
+                "context. No incident identifier or database link is retained in that snapshot."
+            )
+            show_table(pd.DataFrame(historical_context_fact_rows(context)))
+            source_url = facts.get("source_url")
+            if isinstance(source_url, str) and source_url.startswith(("https://", "http://")):
+                st.markdown(f"[Open the bundled historical source]({source_url})")
+            st.caption(
+                f"Snapshot schema: {context['schema']} · origin: {context['origin']} · "
+                f"SHA-256: {context['sha256']}"
+            )
+
+            def launch_historical_context(snapshot_to_preserve, source_reference):
+                """A Streamlit callback: session state only, never SQLite."""
+                st.session_state["prototype_historical_source_context"] = snapshot_to_preserve
+                st.session_state["prototype_source_ref"] = source_reference
+
+            source_reference = f"historical-context:{context['sha256']}"
+            st.button(
+                "Use this historical context in the prototype planner",
+                key=f"launch_historical_context_{context['sha256']}",
+                on_click=launch_historical_context,
+                args=(context, source_reference),
+            )
+    return selected_historical_context()
+
+
+def render_selected_historical_context_card(context):
+    """Make the selected evidence/editable-assumptions boundary visible in the planner."""
+    facts = context.get("facts", {})
+    st.markdown("#### Selected historical incident context")
+    st.success(
+        "A bounded app-preserved historical snapshot is selected. It is context only, not a repair plan, "
+        "approval, or evidence that a vehicle is ready."
+    )
+    st.caption(
+        f"Schema: {context.get('schema')} · origin: {context.get('origin')} · "
+        f"snapshot SHA-256: {context.get('sha256')}"
+    )
+    show_table(pd.DataFrame(historical_context_fact_rows(context)))
+    st.markdown("**Preserved facts**")
+    st.write(
+        "The table is an app-preserved snapshot of the shown historical record and any pre-existing local "
+        "estimate label/range. It has no retained incident foreign key."
+    )
+    st.markdown("**Editable or not established**")
+    st.write(
+        "The profile, response option, assumed response cost, work hours, spare count, reserve floor, "
+        "funding source, transfer, and human-record checklist below remain independent editable model inputs. "
+        "The historical record does not establish repair method, actual cost, timing, spares, condition, "
+        "inspection/sign-off, completion, or safe-to-race status."
+    )
+    source_url = facts.get("source_url") if isinstance(facts, dict) else None
+    if isinstance(source_url, str) and source_url.startswith(("https://", "http://")):
+        st.markdown(f"[Open the bundled historical source]({source_url})")
+
+
 def render_prototype_repair_planner(con, snapshot):
     """Render the separate, editable prototype decision workflow.
 
@@ -683,21 +1252,30 @@ def render_prototype_repair_planner(con, snapshot):
         st.error("The local prototype assumptions file has no planning profiles to compare.")
         return
 
-    st.subheader("Prototype Repair Planner")
+    st.subheader("Guided Repair-Planning Prototype")
     st.warning(
         "Fictional, editable prototype assumptions. This planner is not a team procedure, FIA rule, engineering instruction, certification, prediction, or safe-to-race decision."
     )
     st.caption(
-        "It changes only the local prototype finance ledger after an explicit funding action. The locked 2025 classifications, points, standings, and incident source record are never changed."
+        "You can use the guided examples below without F1 knowledge. The locked 2025 classifications, points, standings, and incident source record are never changed."
     )
     st.info(assumptions.get("notice", "Every prototype input is an editable, non-verified assumption."))
+    catalog_identity = safety_engine.catalog_identity(assumptions)
+    st.caption(
+        f"Current local assumptions basis: {catalog_identity['model_name']} v{catalog_identity['version']} · "
+        f"fingerprint {prototype_short_hash(catalog_identity['sha256'])} · rules {catalog_identity['rules_engine_version']}. "
+        "This fingerprint is a local reproducibility check, not source verification."
+    )
 
+    launched_historical_context = render_historical_incident_launcher(snapshot)
     source_items = [("prototype:demo", "Prototype demo case — no historical claim", None)]
-    for record in snapshot["historical_records"]:
+    historical_source_ref = None
+    if launched_historical_context:
+        historical_source_ref = f"historical-context:{launched_historical_context['sha256']}"
         source_items.append((
-            f"historical:{record['id']}",
-            f"Historical context · Round {record['round_number']} · {record['title']}",
-            record,
+            historical_source_ref,
+            launched_historical_context["display_label"],
+            None,
         ))
     for record in snapshot["manual_records"]:
         source_items.append((
@@ -707,20 +1285,30 @@ def render_prototype_repair_planner(con, snapshot):
         ))
     source_labels = {item[0]: item[1] for item in source_items}
     source_lookup = {item[0]: item[2] for item in source_items}
+    # A launcher selection is stored before this widget is created. If an old
+    # Streamlit session has a no-longer-valid option, safely return to the demo
+    # rather than selecting a historical row by database id.
+    if st.session_state.get("prototype_source_ref") not in source_labels:
+        st.session_state["prototype_source_ref"] = "prototype:demo"
     source_ref = st.selectbox(
         "Case context (reference only)", list(source_labels),
         format_func=lambda value: source_labels[value], key="prototype_source_ref",
-        help="Choosing historical context does not import repair facts into the model or modify that record.",
+        help="The historical launcher copies context only; it does not import repair facts into the model or modify that record.",
     )
     source_record = source_lookup[source_ref]
     source_scope = "".join(character if character.isalnum() else "_" for character in source_ref)
-    source_context = {
-        "reference": source_ref,
-        "display_label": source_labels[source_ref],
-        "kind": "prototype_demo" if source_ref == "prototype:demo" else (
-            "historical_context" if source_ref.startswith("historical:") else "local_manual_context"
-        ),
-    }
+    if source_ref == historical_source_ref and launched_historical_context:
+        # The helper already constructed a fixed, identifier-free context
+        # snapshot. Do not merge in the current incident row or default any
+        # editable planning inputs from its fields.
+        source_context = json.loads(json.dumps(launched_historical_context))
+        render_selected_historical_context_card(source_context)
+    else:
+        source_context = {
+            "reference": source_ref,
+            "display_label": source_labels[source_ref],
+            "kind": "prototype_demo" if source_ref == "prototype:demo" else "local_manual_context",
+        }
     if source_record:
         source_context.update({
             "record_id_at_selection": source_record.get("id"),
@@ -739,36 +1327,90 @@ def render_prototype_repair_planner(con, snapshot):
                 "This historical record was acknowledged for replay continuity because public cost evidence was unavailable. "
                 "That does not establish repair completion, readiness, or prototype review eligibility here."
             )
-    st.caption(f"Active immutable source snapshot: {source_context['display_label']}")
+    st.caption(
+        f"Active app-preserved source-context snapshot: {source_context['display_label']}. "
+        "Its fingerprint is recorded in the local decision receipt; it is not independent source verification."
+    )
+    # Streamlit invokes button callbacks before the script reruns and may use a
+    # different thread. Capture local ledger facts now; the callback must only
+    # update widget state and never touch the SQLite connection itself.
+    demo_reserve_before = float(season.finance_summary(con)["crash_contingency"]["remaining"])
+    demo_aero_capacity = float(season.funding_source_capacity(con, "Aero"))
+
+    def load_fictional_demo(preset):
+        """Populate only editable inputs; human-record boxes always remain unchecked."""
+        preset_values = {
+            "zero_spare": ("suspension_steering", "assumed_spare_replacement", 0, 10.0),
+            "no_time": ("brake_system", "assumed_component_plan", 1, 0.0),
+            "review_candidate": ("bodywork_structures", "assumed_replacement_plan", 1, 12.0),
+        }
+        preset_profile_id, preset_option_id, preset_spares, preset_hours = preset_values[preset]
+        preset_profile = safety_engine.profile_for(preset_profile_id, profiles)
+        preset_option = safety_engine.option_for(preset_profile, preset_option_id)
+        preset_source = "Aero"
+        reserve_floor_now = float(preset_profile["default_reserve_floor_cad"])
+        transfer_now = max(
+            0.0,
+            float(preset_option["estimated_cost_cad"]) + reserve_floor_now - demo_reserve_before,
+        )
+        st.session_state[f"prototype_profile_{source_scope}"] = preset_profile_id
+        st.session_state[f"prototype_option_{source_scope}_{preset_profile_id}"] = preset_option_id
+        st.session_state[f"prototype_option_cost_{source_scope}_{preset_profile_id}_{preset_option_id}"] = float(preset_option["estimated_cost_cad"])
+        st.session_state[f"prototype_option_hours_{source_scope}_{preset_profile_id}_{preset_option_id}"] = float(preset_option["estimated_work_hours"])
+        st.session_state[f"prototype_option_spares_{source_scope}_{preset_profile_id}_{preset_option_id}"] = int(preset_option["spares_required"])
+        st.session_state[f"prototype_spares_{source_scope}_{preset_profile_id}"] = preset_spares
+        st.session_state[f"prototype_hours_{source_scope}_{preset_profile_id}"] = preset_hours
+        st.session_state[f"prototype_floor_{source_scope}_{preset_profile_id}"] = reserve_floor_now
+        st.session_state[f"prototype_funding_source_{source_scope}_{preset_profile_id}"] = preset_source
+        st.session_state[f"prototype_capacity_{source_scope}_{preset_profile_id}_{preset_source}"] = demo_aero_capacity
+        st.session_state[f"prototype_transfer_{source_scope}_{preset_profile_id}_{preset_option_id}_{preset_source}"] = transfer_now
+        for action in preset_option.get("required_actions", []):
+            action_id = str(action.get("id") or "action")
+            st.session_state[
+                f"prototype_action_{source_scope}_{preset_profile_id}_{preset_option_id}_{action_id}"
+            ] = False
+
+    st.markdown("#### 1. Choose a starting point")
+    st.caption(
+        "Start with one of these guided examples, or change the fields yourself below. They only fill in editable prototype values; they do not create a record, spend money, or tick a checklist."
+    )
+    first, second, third = st.columns(3)
+    first.button("Show a spare-parts problem", key=f"demo_zero_spare_{source_scope}", on_click=load_fictional_demo, args=("zero_spare",))
+    second.button("Show a time-window problem", key=f"demo_no_time_{source_scope}", on_click=load_fictional_demo, args=("no_time",))
+    third.button("Show a reviewable example", key=f"demo_candidate_{source_scope}", on_click=load_fictional_demo, args=("review_candidate",))
+    st.caption("A problem example should end in `HOLD`. The reviewable example still needs its checklist boxes confirmed below before it can be saved.")
 
     profile_ids = [profile["id"] for profile in profiles]
     profile_labels = {profile["id"]: profile["label"] for profile in profiles}
     profile_id = st.selectbox(
-        "Editable prototype scenario", profile_ids,
+        "Scenario type", profile_ids,
         format_func=lambda value: profile_labels[value], key=f"prototype_profile_{source_scope}",
+        help="Choose a fictional category of issue. This is a planning example, not a real vehicle diagnosis.",
     )
     profile = safety_engine.profile_for(profile_id, profiles)
     option_ids = [option["id"] for option in profile.get("options", [])]
     option_labels = {option["id"]: option["label"] for option in profile.get("options", [])}
     option_id = st.selectbox(
-        "Response option to review", option_ids,
+        "Response to compare", option_ids,
         format_func=lambda value: option_labels[value], key=f"prototype_option_{source_scope}_{profile_id}",
+        help="Choose the fictional response whose resources you want to check.",
     )
     option = safety_engine.option_for(profile, option_id)
-    st.markdown("#### Editable selected-option modelled estimates")
+    st.markdown("#### 2. Enter the resources for this response")
+    st.caption("Leave the example values in place for a guided demo, or edit them to test a different local planning assumption.")
     first, second, third = st.columns(3)
     option_cost = first.number_input(
-        "Editable assumed response cost (CAD)", min_value=0.0, step=50_000.0,
+        "Assumed response cost (CAD)", min_value=0.0, step=50_000.0,
         value=float(option.get("estimated_cost_cad", 0)),
         key=f"prototype_option_cost_{source_scope}_{profile_id}_{option_id}",
     )
     option_hours = second.number_input(
-        "Editable assumed response work hours", min_value=0.0, step=0.5,
+        "Assumed work hours", min_value=0.0, step=0.5,
         value=float(option.get("estimated_work_hours", 0)),
         key=f"prototype_option_hours_{source_scope}_{profile_id}_{option_id}",
     )
     option_spares = third.number_input(
-        "Editable assumed response spares needed", min_value=0, step=1,
+        "Assumed spare parts needed", min_value=0, step=1,
         value=int(option.get("spares_required", 0)),
         key=f"prototype_option_spares_{source_scope}_{profile_id}_{option_id}",
     )
@@ -783,7 +1425,7 @@ def render_prototype_repair_planner(con, snapshot):
         "These are editable, non-verified modelled estimates for this local case. They are snapshotted when recorded and never rewrite the bundled historical data or the catalog file."
     )
     case_title = st.text_input(
-        "Local planning-record title", f"{profile['label']} — {option['label']}",
+        "Name for your local planning record", f"{profile['label']} — {option['label']}",
         key=f"prototype_title_{source_scope}_{profile_id}_{option_id}",
     )
     st.caption(option.get("description", ""))
@@ -793,23 +1435,23 @@ def render_prototype_repair_planner(con, snapshot):
     cap_headroom = max(0.0, float(finance["remaining"]))
     first, second, third = st.columns(3)
     available_spares = first.number_input(
-        "Editable assumed spare count", min_value=0, step=1,
+        "Spare parts available", min_value=0, step=1,
         value=int(profile.get("default_available_spares", 0)),
         key=f"prototype_spares_{source_scope}_{profile_id}",
     )
     hours_available = second.number_input(
-        "Editable assumed hours to next session", min_value=0.0, step=0.5,
+        "Hours available before the next session", min_value=0.0, step=0.5,
         value=float(profile.get("default_hours_to_next_session", 0)),
         key=f"prototype_hours_{source_scope}_{profile_id}",
     )
     reserve_floor = third.number_input(
-        "Editable local reserve floor (CAD)", min_value=0.0, step=50_000.0,
+        "Minimum reserve to protect (CAD)", min_value=0.0, step=50_000.0,
         value=float(profile.get("default_reserve_floor_cad", 0)),
         key=f"prototype_floor_{source_scope}_{profile_id}",
     )
 
     funding_source = st.selectbox(
-        "Local planned-spend source to reprioritise", CATEGORIES,
+        "Budget area to move money from", CATEGORIES,
         key=f"prototype_funding_source_{source_scope}_{profile_id}",
         help="This is a local current-season planning source; future-car commitments are excluded. On funding, the app records a matching negative local allocation entry; it does not alter real team spending.",
     )
@@ -818,7 +1460,7 @@ def render_prototype_repair_planner(con, snapshot):
     if capacity_key not in st.session_state or st.session_state[capacity_key] > source_capacity:
         st.session_state[capacity_key] = source_capacity
     funding_capacity = st.number_input(
-        "Editable planning availability from selected source (CAD)", min_value=0.0,
+        "Amount available to move from that budget area (CAD)", min_value=0.0,
         max_value=float(source_capacity), step=50_000.0, key=capacity_key,
         help="Cannot exceed the selected source's local planned spend. Lower it to model a protected R&D or operations commitment.",
     )
@@ -839,15 +1481,15 @@ def render_prototype_repair_planner(con, snapshot):
     transfer_key = f"prototype_transfer_{source_scope}_{profile_id}_{option_id}_{funding_source}"
     if transfer_key not in st.session_state:
         st.session_state[transfer_key] = 0.0
-    if st.button("Use calculated transfer needed for this option", key=f"use_transfer_{source_scope}_{profile_id}_{option_id}_{funding_source}"):
+    if st.button("Fill in the minimum budget move needed", key=f"use_transfer_{source_scope}_{profile_id}_{option_id}_{funding_source}"):
         st.session_state[transfer_key] = preliminary["transfer_required_cad"]
     planned_transfer = st.number_input(
-        "Editable planned transfer into local crash reserve (CAD)", min_value=0.0,
+        "Budget to move into the repair reserve (CAD)", min_value=0.0,
         step=50_000.0, key=transfer_key,
         help="The tool blocks the plan if this cannot protect the selected reserve floor or exceeds the selected source capacity.",
     )
 
-    st.markdown("#### Compare modelled response options")
+    st.markdown("#### 3. Compare your choices")
     comparison_inputs = dict(preliminary_inputs)
     comparison_inputs["planned_transfer"] = planned_transfer
     comparison_inputs["completed_actions"] = [
@@ -876,7 +1518,8 @@ def render_prototype_repair_planner(con, snapshot):
         "The comparison assumes each option's listed human-record actions would be completed. The selected option is rechecked below against the checkboxes you actually provide."
     )
 
-    st.markdown("#### Selected option: human-record checklist")
+    st.markdown("#### 4. Confirm the planning checklist")
+    st.caption("Tick these only if you want the prototype to treat the local checklist item as entered. This is not independent verification.")
     completed_actions = []
     for action in option.get("required_actions", []):
         action_id = str(action.get("id") or "action")
@@ -900,14 +1543,20 @@ def render_prototype_repair_planner(con, snapshot):
     )
     if evaluation["eligible_for_review"]:
         st.success(
-            "REVIEW ELIGIBLE — the editable prototype constraints and stated human-record checklist are complete. Human engineering review is still required; this is not a car release."
+            "REVIEW ELIGIBLE — the information entered into this prototype is complete enough to save as a local planning record. "
+            "A human engineering review would still be required; this is not a car release."
         )
     else:
-        st.error("HOLD — do not submit this prototype plan for review until every listed blocker is resolved.")
+        st.error("HOLD — this entered plan is missing something. Read the list below to see what needs attention in the prototype model.")
         for blocker in evaluation["blockers"]:
             st.write(f"- {blocker}")
+        render_prototype_gap_panel(evaluation)
 
-    record_label = "Record prototype review candidate" if evaluation["eligible_for_review"] else "Record held prototype plan"
+    render_prototype_resource_tradeoff(evaluation)
+
+    st.markdown("#### 5. Save the planning result")
+    st.caption("Saving keeps a local record of the values you entered. It does not spend money or send anything to a person.")
+    record_label = "Save reviewable planning record" if evaluation["eligible_for_review"] else "Save held planning record"
     if st.button(record_label, key=f"record_prototype_{source_scope}_{profile_id}_{option_id}"):
         try:
             record = season.record_safety_decision(
@@ -922,59 +1571,148 @@ def render_prototype_repair_planner(con, snapshot):
                 st.info(f"Matching prototype planning record #{record['id']} already exists; no duplicate was created.")
             rerun_app()
 
-    st.markdown("#### Saved prototype records and local funding")
+    st.markdown("#### 6. Review saved records and optional local funding")
     decisions = season.safety_decisions(con)
     if not decisions:
         st.info("No prototype planning records have been saved yet.")
     else:
+        live_checks = {}
+        for decision in decisions:
+            if decision.get("repair_ledger_id") is None:
+                try:
+                    live_checks[decision["id"]] = season.safety_decision_live_check(con, decision["id"])
+                except ValueError as error:
+                    live_checks[decision["id"]] = {
+                        "status": "HOLD", "eligible_for_review": False,
+                        "blockers": [str(error)],
+                        "gaps": [{"code": "LIVE_CHECK_ERROR", "label": str(error), "category": "integrity"}],
+                    }
         decision_rows = []
         for decision in decisions:
             recorded = decision.get("snapshot", {})
             context = decision.get("source_context", {})
+            catalog = decision.get("assumption_catalog", {})
+            live_check = live_checks.get(decision["id"], {})
             decision_rows.append({
                 "Record": decision["id"],
                 "Round": decision["round_number"],
                 "Local title": decision["source_label"],
-                "Immutable source context": context.get("display_label") or decision.get("source_ref") or "Not recorded",
+                "App-preserved source context": context.get("display_label") or decision.get("source_ref") or "Not recorded",
                 "Option": recorded.get("option_label", decision["option_id"]),
-                "State": str(decision["status"]).replace("_", " "),
+                "Recorded state": str(decision["status"]).replace("_", " "),
+                "Live funding check": (
+                    "Already locally recorded" if decision.get("repair_ledger_id") is not None
+                    else str(live_check.get("status") or "CHECK REQUIRED").replace("_", " ")
+                ),
+                "Assumption basis": f"v{catalog.get('version', 'legacy')} · {prototype_short_hash(catalog.get('sha256'))}",
                 "Assumed cost": recorded.get("estimated_cost_cad", 0),
                 "Funding ledger": decision.get("repair_ledger_id") or "Not committed",
             })
         show_table(cad_table(pd.DataFrame(decision_rows), money_columns=("Assumed cost",)))
         st.caption(
-            "A funding checkbox cannot fund a plan. Only the button below records the modelled repair cost, the matching source reprioritisation, and the local reserve top-up."
+            "Funding is optional. The button below records a local finance example: a repair charge, matching budget move, and (if needed) reserve top-up. It does not send a review request or approve a vehicle."
         )
         for decision in decisions:
             context = decision.get("source_context", {})
+            live_check = live_checks.get(decision["id"], {})
             if context:
                 context_line = context.get("display_label") or decision.get("source_ref") or "Prototype context"
                 if context.get("source_url") and str(context["source_url"]).startswith(("https://", "http://")):
-                    st.caption(f"Record #{decision['id']} source snapshot: {context_line} · [saved source link]({context['source_url']})")
+                    st.caption(f"Record #{decision['id']} app-preserved source context: {context_line} · [saved source link]({context['source_url']})")
                 else:
-                    st.caption(f"Record #{decision['id']} source snapshot: {context_line}")
+                    st.caption(f"Record #{decision['id']} app-preserved source context: {context_line}")
+            try:
+                packet = season.safety_decision_packet(con, decision["id"])
+            except ValueError as error:
+                packet = {"error": str(error)}
+            with st.expander(f"Decision receipt / reproducibility audit · record #{decision['id']}"):
+                catalog = decision.get("assumption_catalog", {})
+                st.caption(
+                    f"Frozen local assumptions basis: {catalog.get('model_name', 'legacy record')} "
+                    f"v{catalog.get('version', 'not recorded')} · fingerprint "
+                    f"{prototype_short_hash(catalog.get('sha256'))} · rules "
+                    f"{catalog.get('rules_engine_version', 'not recorded')}."
+                )
+                recorded_basis = decision.get("snapshot", {}).get("frozen_rule_basis", {})
+                if recorded_basis:
+                    st.caption(
+                        f"Frozen selected-profile fingerprint: {prototype_short_hash(recorded_basis.get('profile_sha256'))}."
+                    )
+                catalog_check = packet.get("current_catalog_check", {})
+                if catalog_check:
+                    st.write(
+                        f"Current-catalog check: **{str(catalog_check.get('state', 'CHECK REQUIRED')).replace('_', ' ')}** — "
+                        f"{catalog_check.get('message', 'No current check available.')}"
+                    )
+                fingerprint_check = packet.get("decision_fingerprint_check", {})
+                if fingerprint_check:
+                    st.write(
+                        f"Decision-basis local consistency check: **{str(fingerprint_check.get('state', 'CHECK REQUIRED')).replace('_', ' ')}** — "
+                        f"{fingerprint_check.get('message', 'No decision-basis check available.')}"
+                    )
+                if decision.get("funded_at"):
+                    st.write(
+                        f"Local funding / handoff record: {decision['funded_at']} · replay round "
+                        f"{decision.get('funded_round_number') or 'not recorded'} · repair ledger "
+                        f"#{decision.get('repair_ledger_id')} · reprioritisation ledger "
+                        f"#{decision.get('transfer_ledger_id') or 'none'} · reserve-top-up ledger "
+                        f"#{decision.get('reserve_transfer_ledger_id') or 'none'}."
+                    )
+                else:
+                    st.write(f"Planning record created: {decision.get('created_at', 'not recorded')}. No funding was committed.")
+                integrity = packet.get("ledger_link_integrity", {})
+                if integrity:
+                    st.write(
+                        f"Receipt ledger-link check: **{integrity.get('state', 'CHECK REQUIRED')}**"
+                        + (f" — {' '.join(integrity.get('errors', []))}" if integrity.get('errors') else "")
+                    )
+                st.download_button(
+                    "Download local prototype decision receipt (JSON)",
+                    data=json.dumps(packet, indent=2, sort_keys=True, ensure_ascii=False),
+                    file_name=f"prototype-decision-receipt-{decision['id']}.json",
+                    mime="application/json",
+                    key=f"download_prototype_receipt_{decision['id']}",
+                )
+                st.caption(
+                    "The receipt is an app-generated reproducibility/audit artifact. It is not external verification, a message to a reviewer, or a vehicle approval."
+                )
             if decision["status"] == "REVIEW_ELIGIBLE" and decision.get("repair_ledger_id") is None:
-                if st.button(
-                    f"Commit modelled funding and request human review · record #{decision['id']}",
-                    key=f"fund_prototype_{decision['id']}",
-                ):
-                    try:
-                        funded = season.fund_safety_decision(con, decision["id"])
-                    except ValueError as error:
-                        st.error(str(error))
-                    else:
-                        if funded["already_funded"]:
-                            st.info("That modelled funding record already exists; it was not charged twice.")
+                if live_check.get("eligible_for_review"):
+                    if st.button(
+                        f"Record modelled funding and local review-handoff package · record #{decision['id']}",
+                        key=f"fund_prototype_{decision['id']}",
+                    ):
+                        try:
+                            funded = season.fund_safety_decision(con, decision["id"])
+                        except ValueError as error:
+                            st.error(str(error))
                         else:
-                            st.success(
-                                f"Local modelled funding recorded once in ledger entry #{funded['repair_ledger_id']}. "
-                                "The plan is now REVIEW REQUESTED; human engineering review remains required."
-                            )
-                        rerun_app()
+                            if funded["already_funded"]:
+                                st.info("That local modelled funding record already exists; it was not charged twice.")
+                            else:
+                                st.success(
+                                    f"Local modelled funding recorded once in ledger entry #{funded['repair_ledger_id']}. "
+                                    "A local review-handoff package is now recorded; it was not sent to a person and is not an approval or release."
+                                )
+                            rerun_app()
+                else:
+                    st.warning(
+                        f"Record #{decision['id']} has a saved review-candidate state, but its current local funding check is HOLD. No funding button is available."
+                    )
+                    render_prototype_gap_panel(
+                        live_check, heading=f"Current local funding conditions · record #{decision['id']}"
+                    )
             elif decision["status"] == "HOLD" and decision.get("blockers"):
                 st.caption(f"Record #{decision['id']} remains held: {' '.join(decision['blockers'])}")
+            elif decision["status"] == "REVIEW_REQUESTED":
+                st.success(
+                    f"Record #{decision['id']} has a local funding and review-handoff record. "
+                    "It remains a prototype audit entry, not a sent review, approval, or release."
+                )
 
     current_finance = season.finance_summary(con)
+    render_prototype_resource_contention(con, assumptions, current_finance)
+
     st.markdown("#### Tangerine resource view")
     first, second, third, fourth = st.columns(4)
     first.metric("Local cap remaining", money(current_finance["remaining"]))
@@ -1095,6 +1833,58 @@ The separate Prototype Repair Planner above uses clearly labelled editable assum
     readiness_model = snapshot["readiness_model"]
     st.info(f"Readiness outcome unavailable: {readiness_model['reason']}")
     st.caption("Use Race control for the existing replay repair-finance record. Use the separate Prototype Repair Planner above for transparent, editable model assumptions; neither workflow authorises a vehicle release.")
+
+
+def render_safety_control_room(con, state):
+    """Provide a direct, safety-first entry without changing the replay tab."""
+    st.title("Safety Control Room")
+    if not state:
+        st.caption(
+            "Create an exact 2025 replay first. This workspace only becomes available after a constructor and local pre-season ledger have been set up."
+        )
+        st.info(
+            "No replay is active yet, so there is no historical incident context or local planning record to review."
+        )
+        st.button(
+            "Open exact replay setup",
+            on_click=navigate,
+            args=("2025 Season Budget Replay",),
+            key="open_safety_control_room_setup",
+        )
+        return
+
+    team = TEAMS[state["team_id"]]
+    st.caption(
+        f"Safety-first planning for {team['name']}'s exact 2025 replay · review historical evidence and transparent local funding assumptions. "
+        "This is not a safety release, repair instruction, or safe-to-race determination."
+    )
+    st.markdown("### Start here")
+    st.write(
+        "Use this screen like a simple budget check before a fictional repair response: "
+        "pick a scenario, enter the resources you think are available, and the app explains whether the plan must pause."
+    )
+    first, second, third = st.columns(3)
+    first.markdown("**1. Pick a situation**")
+    first.caption("Use a built-in example, or open a historical record for background only.")
+    second.markdown("**2. Check what is available**")
+    second.caption("Enter modelled parts, time, reserve, and movable budget. Nothing is assumed to be real team data.")
+    third.markdown("**3. Read the next step**")
+    third.caption("`HOLD` means the entered plan has a gap. `REVIEW ELIGIBLE` means it can be saved for local review—not approved to race.")
+    st.info(
+        "Quick demo: choose **Show a spare-parts problem**, read the missing-resource message, then choose "
+        "**Show a reviewable example** and complete its two checklist boxes. The optional two-case check later shows "
+        "why two individually affordable responses can still clash over the same resources."
+    )
+    with st.expander("What this tool changes — and what it does not"):
+        st.markdown(
+            """**It helps you:** see modelled resource gaps, compare local budget trade-offs, and save an auditable local planning record.
+
+**It does not:** diagnose a real car, prescribe a repair, contact an engineer, authorise spending, certify safety, or change the historic 2025 results.
+
+Every repair cost, spare count, work window, and checklist item in this planner is an editable prototype assumption."""
+        )
+    st.markdown("---")
+    render_safety_planning(con, state)
 
 
 def render_audit(con):
@@ -1342,8 +2132,14 @@ mode = state["theme"] if state else "neutral"
 st.markdown(livery_css(palette["primary"], palette["secondary"], mode), unsafe_allow_html=True)
 st.sidebar.markdown("## 🏁 Race Operations")
 if "workspace" not in st.session_state:
-    st.session_state["workspace"] = "Home"
-workspace = st.sidebar.radio("Workspace", ["Home", "2025 Season Budget Replay", "Budget Workspace"], key="workspace")
+    # A new user must still start in setup, while a saved replay opens on the
+    # safety-first workflow that is the hackathon's primary demonstration.
+    st.session_state["workspace"] = "Safety Control Room" if state else "Home"
+workspace = st.sidebar.radio(
+    "Workspace",
+    ["Home", "2025 Season Budget Replay", "Safety Control Room", "Budget Workspace"],
+    key="workspace",
+)
 if state:
     appearance = st.sidebar.selectbox("Appearance", ["Team Livery", "Race Operations"], index=0 if state["theme"] == "team" else 1)
     desired = "team" if appearance == "Team Livery" else "neutral"
@@ -1362,5 +2158,7 @@ if workspace == "Home":
     render_home(con, state)
 elif workspace == "2025 Season Budget Replay":
     render_simulation(con, state)
+elif workspace == "Safety Control Room":
+    render_safety_control_room(con, state)
 else:
     render_budget_workspace(con)

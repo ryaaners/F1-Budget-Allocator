@@ -1,0 +1,23 @@
+name: Verify prototype planner
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Verify runtime dependency imports
+        run: python -c "import altair, numpy, pandas, plotly, streamlit"
+      - name: Compile application and planning engine
+        run: python -m py_compile app.py career_engine.py safety_engine.py tests/test_safety_engine.py tests/test_safety_decisions.py tests/test_safety_planning.py
+      - name: Run offline unit tests
+        run: python -B -m unittest discover -s tests -q

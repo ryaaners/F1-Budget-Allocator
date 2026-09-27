@@ -7,9 +7,8 @@ for tracking expenditure and running independent what-if analysis.
 
 ## Start it locally
 
-The project supports the Python 3.9.7 installation used by this workspace.
-Launch Streamlit through Python so it works even if the user-level `streamlit`
-command is not on your `PATH`:
+The project is tested with **Python 3.11**. Launch Streamlit through Python so
+it works even if the user-level `streamlit` command is not on your `PATH`:
 
 ```bash
 cd /path/to/f1-budget-allocator
@@ -18,6 +17,14 @@ python3 -m streamlit run app.py
 ```
 
 Open the local address Streamlit prints, usually `http://localhost:8501`.
+
+On Windows PowerShell, the equivalent is:
+
+```powershell
+Set-Location 'C:\path\to\F1-Budget-Allocator'
+py -3.11 -m pip install --user -r requirements.txt
+py -3.11 -m streamlit run app.py
+```
 
 Streamlit Community Cloud uses the repository `runtime.txt` pin (`python-3.11`)
 so it does not select Python 3.14 for the Streamlit 1.12 dependency stack.
@@ -150,7 +157,9 @@ replay's constructor rank and points with the locally recorded 2025 outcome.
 
 ### Safety planning: evidence plus a separate prototype planner
 
-The **Safety planning** tab keeps two things separate:
+When a saved replay exists, the application opens the **Safety Control Room**
+first so the safety-planning workflow is the natural demo entry point. It keeps
+two things separate:
 
 - **Historical evidence and data boundary** brings together only the read-only
   incident record, source links where available, project critical-repair flags,
@@ -173,14 +182,56 @@ structure live in
 [`data/safety_planning_assumptions.json`](data/safety_planning_assumptions.json).
 They are not public-team inventory, repair invoices, validated engineering
 facts, or official FIA rules. The planner can store a historical incident as a
-text reference, but it never writes to the historical incident record or uses
-the public record as hidden repair data.
+bounded source-context reference, but it never writes to the historical
+incident record or uses the public record as hidden repair data.
+
+The **Historical incident → prototype case** launcher accepts only a
+repair-required historical record and turns it into an identifier-free,
+app-preserved context snapshot. It exposes only the bundled context that is
+actually available (for example round, title, public source link, damage-area
+summary, and any pre-existing local estimate label). It does not prefill a
+response option, cost, work duration, spare count, checklist, or sign-off.
+The app verifies that snapshot's bounded schema, origin, SHA-256, and matching
+`historical-context:<sha>` reference before a decision can be saved or funded.
+This guards the local workflow against detached/forged context through the
+app's own APIs; it is still not independent source verification.
 
 Each saved prototype record keeps both a user-editable local title and an
-immutable snapshot of the selected context label (plus the bundled round/title/
-source-link details when present). It does not retain a foreign-key dependency
-on a replay incident row, so an exact-replay rebuild cannot silently retarget a
-past local decision to a different historical record.
+app-preserved source-context snapshot (plus bundled round/title/source-link
+details where present). It records a canonical SHA-256 fingerprint of the
+editable assumptions catalog, its stated catalog/rules-engine version, and a
+frozen selected-profile/option basis. These are local reproducibility checks,
+not proof that a source or repair assumption is true. If the catalog or rules
+engine changes, the current funding check holds the old record and requires a
+fresh plan rather than silently reinterpreting it. Legacy records without this
+basis are viewable but cannot receive new local funding.
+
+For each `HOLD`, the planner exposes structured model gaps—such as assumed
+spare, work-window, reserve, funding-source, cap, or checklist shortfalls—and
+renders a reserve/cap trade-off preview. It also includes three fictional demo
+input presets. The presets never import historical facts, complete a human
+record, create a decision, or commit funding.
+
+The **Two-case shared-resource stress test** adds a read-only Orange Flag
+scenario: two fictional, editable response options are summed once against one
+shared assumed spare pool, work window, reserve floor, planned transfer, source
+capacity, and cap headroom. It makes a resource conflict visible even when a
+single case appears contained. `RESOURCE_FEASIBLE` only means the entered
+fictional accounting envelope contains those two entered demands; it creates no
+case, funding record, review request, repair instruction, or release outcome.
+
+Saved decisions have a read-only **Decision receipt / reproducibility audit**
+panel and JSON download. It contains the app-preserved context, recorded and
+funding-time checks, catalog/profile fingerprints, linked local-ledger IDs, and
+the non-release disclaimer. This is an app-generated audit artifact; it is not
+sent to a reviewer and does not constitute a vehicle approval.
+
+The receipt also re-derives a local decision fingerprint from the persisted
+frozen decision basis and checks that the saved funding snapshot and linked
+ledger rows still reconcile to it. Funding refuses a stale, incomplete,
+inconsistent, or already-correlated local record, including a record whose
+mutable funding pointers were cleared. These checks are local tamper-evidence
+and duplicate-charge safeguards—not tamper-proof storage or external audit.
 
 When the user explicitly commits funding, the app records one modelled repair
 charge and (where needed) a matching negative local planned-spend
@@ -188,6 +239,11 @@ reprioritisation from the selected source. That makes the reserve/cap/R&D or
 operations trade-off visible in the local ledger. It does not move money in a
 real team, change any 2025 classification, or clear the historical replay's
 separate repair-record gate.
+
+Funding uses the plan's original replay round. A plan recorded for an earlier
+round is held until it is re-recorded for the current local replay round. The
+ledger links the repair, reprioritisation, and reserve-top-up rows to the saved
+decision, so a receipt can verify their local correlation.
 
 Only local **current-season** planned commitments are available as an
 explicit funding source; future-car-labelled commitments are excluded. The
@@ -199,6 +255,13 @@ Before a live demo, run the focused browser checks in
 [`UI_QA_CHECKLIST.md`](UI_QA_CHECKLIST.md). The unit tests cover the pure rules
 and SQLite boundaries; the checklist is intentionally honest about requiring a
 real Streamlit session for widget-level verification.
+
+For the Formula Tech Hacks presentation narrative, scope boundaries, Q&A, and
+click-by-click demo script, use
+[`HACKATHON_PRESENTATION.md`](HACKATHON_PRESENTATION.md).
+
+For a disposable local test/demo database, set `F1_BUDGET_DB_PATH` before
+running Streamlit. The normal default remains the bundled `f1_budget.db`.
 
 ## What investments do
 

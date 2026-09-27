@@ -74,16 +74,61 @@ and selected-option cost/work/spare values can be overridden in the UI and
 snapshotted with a local decision.
 They are not sourced team data, repair instructions, engineering validation, or
 official FIA requirements. Historical events can be selected only as a text
-context reference; their incident rows and source records are never modified by
-the planner. A saved planning record preserves a separate snapshot of the
-selected context label and available round/title/source-link fields, rather
-than treating the mutable replay incident ID as proof or a live dependency.
+context snapshot; their incident rows and source records are never modified by
+the planner. A saved planning record preserves an **app-preserved
+source-context snapshot** of the selected context label and available
+round/title/source-link fields. That snapshot is useful local context, not an
+immutable external source, proof that the linked source is correct, or a live
+dependency on the replay incident ID.
+
+The **Historical incident → prototype case** launcher only accepts a
+repair-required historical row. It creates an identifier-free bounded v1
+snapshot of the available app-held fields rather than passing through the
+database incident ID or importing a repair plan. The snapshot has a local
+SHA-256 and must use its matching `historical-context:<sha>` reference before a
+decision can be recorded or funded. The app validates that schema/origin/hash
+relationship again at funding time. That is a local provenance boundary, not
+evidence that the public source, estimate, inventory, or repair is true.
+
+At record time, the app also stores a canonical SHA-256 fingerprint of the
+editable assumptions catalog, its stated catalog and rules-engine versions, and
+a frozen copy of the selected profile and option. These fields make a local
+decision reproducible even if the editable catalog later changes; they do not
+verify the assumptions or the historical source. Before optional local funding,
+the app checks the current catalog against the recorded fingerprint. A changed,
+unavailable, or legacy-unfingerprinted catalog holds the old plan until it is
+recorded again under a valid current basis rather than silently reinterpreting
+it.
+
+Each saved decision exposes an app-generated **Decision receipt /
+reproducibility audit** and JSON download. The receipt includes the preserved
+context, recorded and funding-time checks, catalog/profile fingerprints, and
+locally linked ledger IDs. It is a local audit artifact only: it is not a
+message sent to a reviewer, external verification, repair completion record,
+or vehicle approval.
+
+The receipt recomputes a decision-basis fingerprint from frozen persisted
+fields and verifies funding-time resource values and linked local-ledger rows
+against that basis. If the local basis is missing, inconsistent, stale, or has
+any correlated prototype funding row despite cleared mutable pointers, new
+funding is held. This provides local reproducibility/tamper evidence and a
+duplicate-charge backstop; it is not cryptographic storage integrity or an
+external audit.
+
+The optional **Two-case shared-resource stress test** has no historical-data
+claim. Its case costs, spares, work hours, shared reserve, transfer, source
+capacity, and cap headroom are all explicit editable prototype inputs. It
+returns only an accounting-envelope `RESOURCE_FEASIBLE` or `RESOURCE_HOLD`
+result, creates no persisted decision or ledger entry, and does not determine
+safety, authorise work, or release a vehicle.
 
 The prototype may produce `HOLD`, `REVIEW_ELIGIBLE`, or `REVIEW_REQUESTED`.
 These describe only whether its entered assumptions, transparent resource
-checks, and local audit action are complete. They do not calculate a readiness
-score, recommend a real repair, predict a failure, authorise a vehicle release,
-or establish that a car is safe to race.
+checks, and local audit/handoff action are complete. `REVIEW_REQUESTED` means
+the app recorded a local funding and review-handoff package; it does not mean
+that a person was contacted or approved anything. The states do not calculate a
+readiness score, recommend a real repair, predict a failure, authorise a
+vehicle release, or establish that a car is safe to race.
 
 User-added repair events from the Season ledger are displayed separately as
 local planning entries. They are never presented as historical incident

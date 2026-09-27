@@ -1,5 +1,6 @@
 """Regression tests for the evidence-only safety-planning foundation."""
 
+import copy
 import sqlite3
 import unittest
 
@@ -161,6 +162,77 @@ class SafetyPlanningSnapshotTests(unittest.TestCase):
 
         self.assertEqual(at_five_percent["label"], "Illustrative gameplay tier 1")
         self.assertEqual(above_five_percent["label"], "Illustrative gameplay tier 2")
+
+    def test_historical_launcher_context_is_whitelisted_and_fingerprint_sensitive(self):
+        incident = {
+            "id": 99,
+            "round_number": 7,
+            "title": "Historical contact record",
+            "session_name": "Grand Prix",
+            "driver_id": "driver_one",
+            "kind": "incident",
+            "reason": "Public result note",
+            "responsible": "Not officially assigned",
+            "components": "Front wing",
+            "source": "Bundled historical record",
+            "source_url": "https://example.test/historical-record",
+            "state": "pending",
+            "repair_required": 1,
+            "safety_critical": 1,
+            "category": "Chassis / structures",
+            "cost_low": 100_000,
+            "cost_high": 200_000,
+            "estimate_label": "Public-context local estimate",
+            "amount": 123_456,
+            "chosen_amount": 654_321,
+            "penalty": 10,
+            "created_at": "2025-01-01",
+            "reviewed_at": "2025-01-02",
+            "unrelated_field": "must not be preserved",
+        }
+        original = copy.deepcopy(incident)
+
+        context = season.historical_incident_source_context(incident)
+        changed_title = copy.deepcopy(incident)
+        changed_title["title"] = "Different historical contact record"
+        changed_unlisted = copy.deepcopy(incident)
+        changed_unlisted.update({"id": 100, "amount": 1, "chosen_amount": 2})
+
+        self.assertEqual(incident, original)
+        self.assertEqual(context["schema"], season.HISTORICAL_INCIDENT_CONTEXT_SCHEMA)
+        self.assertEqual(context["origin"], season.HISTORICAL_INCIDENT_CONTEXT_ORIGIN)
+        self.assertEqual(len(context["sha256"]), 64)
+        self.assertNotIn("id", context)
+        self.assertEqual(
+            set(context["facts"]),
+            {
+                "round_number", "title", "session_name", "driver_id", "incident_kind", "reason",
+                "responsible", "damage_area", "source", "source_url", "record_state_at_launch",
+                "repair_required", "project_safety_critical", "app_local_category",
+                "preexisting_local_estimate",
+            },
+        )
+        self.assertEqual(context["facts"]["title"], "Historical contact record")
+        self.assertEqual(context["facts"]["preexisting_local_estimate"]["high_cad"], 200_000)
+        self.assertNotIn("amount", context["facts"])
+        self.assertNotIn("chosen_amount", context["facts"])
+        self.assertNotIn("unrelated_field", context["facts"])
+        self.assertNotEqual(
+            context["sha256"], season.historical_incident_source_context(changed_title)["sha256"]
+        )
+        self.assertEqual(
+            context["sha256"], season.historical_incident_source_context(changed_unlisted)["sha256"]
+        )
+
+    def test_historical_launcher_context_rejects_manual_or_non_repair_records(self):
+        base = {"round_number": 1, "title": "Record", "kind": "incident", "repair_required": 1}
+        manual = dict(base, kind="manual")
+        not_repair_required = dict(base, repair_required=0)
+
+        with self.assertRaisesRegex(ValueError, "manual"):
+            season.historical_incident_source_context(manual)
+        with self.assertRaisesRegex(ValueError, "repair-required"):
+            season.historical_incident_source_context(not_repair_required)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Pure-rule tests for the editable prototype repair planner."""
 
+import copy
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,6 +11,8 @@ class PrototypeSafetyEngineTests(unittest.TestCase):
     def setUp(self):
         self.profile = safety_engine.profile_for("suspension_steering")
         self.option_id = "assumed_spare_replacement"
+        self.bodywork_profile = safety_engine.profile_for("bodywork_structures")
+        self.bodywork_option_id = "assumed_replacement_plan"
         self.complete_actions = [
             action["id"]
             for action in safety_engine.option_for(self.profile, self.option_id)["required_actions"]
@@ -60,6 +63,9 @@ class PrototypeSafetyEngineTests(unittest.TestCase):
         joined = " ".join(result["blockers"])
         self.assertIn("spare assumption is short", joined)
         self.assertIn("work-window assumption is short", joined)
+        codes = {gap["code"] for gap in result["gaps"]}
+        self.assertIn("SPARES_SHORT", codes)
+        self.assertIn("WORK_WINDOW_SHORT", codes)
 
     def test_reserve_floor_and_transfer_shortfall_hold_the_plan(self):
         result = safety_engine.evaluate_option(
@@ -159,6 +165,160 @@ class PrototypeSafetyEngineTests(unittest.TestCase):
         self.assertEqual(selected["spares_required"], 2)
         self.assertEqual(other["estimated_cost_cad"], 250_000)
         self.assertEqual(selected["case_inputs"]["option_overrides"][self.option_id]["spares_required"], 2)
+
+    def test_excess_transfer_is_held_until_the_explicit_reserve_floor_is_updated(self):
+        result = safety_engine.evaluate_option(
+            self.profile, self.option_id, self.inputs(planned_transfer=2_000_000)
+        )
+
+        self.assertEqual(result["status"], "HOLD")
+        self.assertIn("TRANSFER_EXCESS", {gap["code"] for gap in result["gaps"]})
+        self.assertIn("exceeds the calculated reserve-floor need", " ".join(result["blockers"]))
+
+    def test_catalog_identity_is_stable_for_key_order_and_changes_for_semantic_edits(self):
+        catalog = safety_engine.load_assumptions()
+        reordered = {key: copy.deepcopy(catalog[key]) for key in reversed(list(catalog))}
+        baseline = safety_engine.catalog_identity(catalog)
+
+        self.assertEqual(baseline["sha256"], safety_engine.catalog_identity(reordered)["sha256"])
+        changed = copy.deepcopy(catalog)
+        changed["profiles"][0]["options"][1]["estimated_cost_cad"] += 1
+        self.assertNotEqual(baseline["sha256"], safety_engine.catalog_identity(changed)["sha256"])
+
+    def test_invalid_boolean_and_ledger_category_are_rejected_before_a_hold_only_path_can_flip(self):
+        string_boolean = copy.deepcopy(safety_engine.load_assumptions())
+        string_boolean["profiles"][0]["options"][0]["can_request_review"] = "false"
+        with self.assertRaisesRegex(safety_engine.AssumptionError, "true or false"):
+            safety_engine.validate_assumptions(string_boolean)
+
+        bad_category = copy.deepcopy(safety_engine.load_assumptions())
+        bad_category["profiles"][0]["ledger_category"] = "Not a local category"
+        with self.assertRaisesRegex(safety_engine.AssumptionError, "valid local ledger category"):
+            safety_engine.validate_assumptions(bad_category)
+
+    def test_frozen_profile_snapshot_contains_only_the_selected_valid_option(self):
+        frozen = safety_engine.frozen_profile_snapshot(self.profile, self.option_id)
+        restored = safety_engine.profile_from_frozen_snapshot(
+            frozen, self.profile["id"], self.option_id
+        )
+
+        self.assertEqual([option["id"] for option in frozen["options"]], [self.option_id])
+        self.assertEqual(restored["ledger_category"], self.profile["ledger_category"])
+
+    def resource_cases(self):
+        return [
+            {
+                "case_id": "suspension-example",
+                "case_label": "Fictional suspension example",
+                "profile": self.profile,
+                "option_id": self.option_id,
+            },
+            {
+                "case_id": "bodywork-example",
+                "case_label": "Fictional bodywork example",
+                "profile": self.bodywork_profile,
+                "option_id": self.bodywork_option_id,
+            },
+        ]
+
+    def resource_envelope(self, **overrides):
+        envelope = {
+            "available_spares": 2,
+            "hours_available": 15,
+            "reserve_before": 5_000_000,
+            "reserve_floor": 1_000_000,
+            "planned_transfer": 0,
+            "funding_capacity": 10_000_000,
+            "cap_headroom": 10_000_000,
+        }
+        envelope.update(overrides)
+        return envelope
+
+    def test_two_review_capable_cases_can_be_resource_feasible(self):
+        result = safety_engine.evaluate_resource_contention(
+            self.resource_cases(), self.resource_envelope()
+        )
+
+        self.assertEqual(result["scope"], "prototype_resource_contention_only")
+        self.assertEqual(result["status"], "RESOURCE_FEASIBLE")
+        self.assertTrue(result["resource_feasible"])
+        self.assertEqual(result["totals"]["case_count"], 2)
+        self.assertEqual(result["totals"]["estimated_cost_cad"], 2_400_000)
+        self.assertEqual(result["totals"]["estimated_work_hours"], 15)
+        self.assertEqual(result["totals"]["spares_required"], 2)
+        self.assertEqual(
+            [row["state"] for row in result["case_rows"]],
+            ["RESOURCE_CONTRIBUTES", "RESOURCE_CONTRIBUTES"],
+        )
+        self.assertEqual(result["gaps"], [])
+        self.assertIn("does not determine safety", result["disclaimer"])
+
+    def test_shared_spare_time_reserve_and_source_conflicts_hold_the_cases(self):
+        result = safety_engine.evaluate_resource_contention(
+            self.resource_cases(),
+            self.resource_envelope(
+                available_spares=1,
+                hours_available=10,
+                reserve_before=0,
+                reserve_floor=1_000_000,
+                planned_transfer=1_000_000,
+                funding_capacity=500_000,
+                cap_headroom=1_000_000,
+            ),
+        )
+
+        self.assertEqual(result["status"], "RESOURCE_HOLD")
+        self.assertFalse(result["resource_feasible"])
+        codes = {gap["code"] for gap in result["gaps"]}
+        self.assertTrue({
+            "SHARED_SPARES_SHORT",
+            "SHARED_WORK_HOURS_SHORT",
+            "SHARED_TRANSFER_SHORT",
+            "SHARED_SOURCE_CAPACITY_SHORT",
+            "SHARED_RESERVE_FLOOR_SHORT",
+            "SHARED_CAP_HEADROOM_SHORT",
+        }.issubset(codes))
+        self.assertEqual(result["totals"]["transfer_required_cad"], 3_400_000)
+
+    def test_hold_only_and_malformed_cases_are_contained_as_resource_hold(self):
+        result = safety_engine.evaluate_resource_contention(
+            [
+                {
+                    "case_id": "hold-only",
+                    "profile": self.profile,
+                    "option_id": "hold_for_inspection",
+                },
+                {"case_id": "broken", "profile": {"id": "broken"}, "option_id": "missing"},
+            ],
+            self.resource_envelope(),
+        )
+
+        self.assertEqual(result["status"], "RESOURCE_HOLD")
+        self.assertEqual(result["totals"]["held_case_count"], 2)
+        self.assertIn("CASE_NOT_RESOURCE_READY", {gap["code"] for gap in result["gaps"]})
+        row_codes = {gap["code"] for row in result["case_rows"] for gap in row["gaps"]}
+        self.assertIn("HOLD_ONLY_OPTION", row_codes)
+        self.assertIn("MALFORMED_CASE", row_codes)
+
+    def test_resource_contention_never_mutates_case_or_envelope_inputs(self):
+        cases = self.resource_cases()
+        cases[0]["case_inputs"] = {
+            "option_overrides": {
+                self.option_id: {
+                    "estimated_cost_cad": 1_500_000,
+                    "estimated_work_hours": 8,
+                    "spares_required": 1,
+                }
+            }
+        }
+        envelope = self.resource_envelope()
+        original_cases = copy.deepcopy(cases)
+        original_envelope = copy.deepcopy(envelope)
+
+        safety_engine.evaluate_resource_contention(cases, envelope)
+
+        self.assertEqual(cases, original_cases)
+        self.assertEqual(envelope, original_envelope)
 
 
 if __name__ == "__main__":

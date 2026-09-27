@@ -6,6 +6,7 @@ decisions remain interactive, but they never alter a replayed race result.
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import sqlite3
 from datetime import date
@@ -26,8 +27,19 @@ from career_data import (
 )
 
 CURRENT_CAR_CATEGORIES = {"Aero", "Powertrain", "Chassis / structures", "Testing"}
+PROTOTYPE_FUNDING_KINDS = (
+    "prototype_repair_plan",
+    "prototype_funding_reallocation",
+    "prototype_reserve_transfer",
+)
 # Version 3 also rebuilds source-backed incident rows for older exact-replay saves.
 REPLAY_VERSION = 3
+
+# A launcher deliberately keeps only an app-preserved, non-relational copy of
+# facts already stored in a historical incident record.  It is not a repair
+# specification or a reference back to a mutable incident row.
+HISTORICAL_INCIDENT_CONTEXT_SCHEMA = "f1-budget-allocator/historical-incident-context/v1"
+HISTORICAL_INCIDENT_CONTEXT_ORIGIN = "app_preserved_historical_incident"
 
 
 def money(value):
@@ -50,6 +62,35 @@ def _add_column(con, table, name, definition):
         con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def _ensure_prototype_funding_unique_index(con):
+    """Add a duplicate-funding backstop without mutating a legacy ledger.
+
+    A database containing an old duplicate must remain readable for audit; the
+    runtime preflight will still refuse any new charge for that decision.  In a
+    clean ledger, the partial unique index is a second guard in addition to the
+    transaction and correlated-row check in ``fund_safety_decision``.
+    """
+    duplicate = con.execute(
+        """SELECT safety_decision_id, kind
+        FROM career_ledger
+        WHERE safety_decision_id IS NOT NULL AND kind IN (?,?,?)
+        GROUP BY safety_decision_id, kind
+        HAVING COUNT(*) > 1
+        LIMIT 1""",
+        PROTOTYPE_FUNDING_KINDS,
+    ).fetchone()
+    if duplicate:
+        return False
+    con.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS career_ledger_prototype_decision_kind_unique
+        ON career_ledger(safety_decision_id, kind)
+        WHERE safety_decision_id IS NOT NULL
+          AND kind IN ('prototype_repair_plan', 'prototype_funding_reallocation',
+                       'prototype_reserve_transfer')"""
+    )
+    return True
+
+
 def migrate(con):
     """Create the replay schema and non-destructively upgrade older local saves."""
     con.executescript(
@@ -69,7 +110,8 @@ def migrate(con):
             id INTEGER PRIMARY KEY AUTOINCREMENT, round_number INTEGER, session_name TEXT,
             category TEXT NOT NULL, amount REAL NOT NULL, kind TEXT NOT NULL, note TEXT,
             future_car INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-            effect TEXT NOT NULL DEFAULT '', counts_to_cap INTEGER NOT NULL DEFAULT 1
+            effect TEXT NOT NULL DEFAULT '', counts_to_cap INTEGER NOT NULL DEFAULT 1,
+            safety_decision_id INTEGER
         );
         CREATE TABLE IF NOT EXISTS career_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, round_number INTEGER NOT NULL,
@@ -101,8 +143,13 @@ def migrate(con):
             option_id TEXT NOT NULL, funding_source TEXT,
             status TEXT NOT NULL, blockers_json TEXT NOT NULL,
             snapshot_json TEXT NOT NULL, repair_ledger_id INTEGER,
-            transfer_ledger_id INTEGER, funded_at TEXT,
-            review_requested_at TEXT, created_at TEXT NOT NULL
+            transfer_ledger_id INTEGER, reserve_transfer_ledger_id INTEGER,
+            funded_at TEXT, funded_round_number INTEGER,
+            review_requested_at TEXT, created_at TEXT NOT NULL,
+            assumption_catalog_json TEXT NOT NULL DEFAULT '{}',
+            profile_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            funding_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            decision_fingerprint TEXT
         );
         """
     )
@@ -111,6 +158,7 @@ def migrate(con):
         ("career_state", "replay_version", "INTEGER NOT NULL DEFAULT 0"),
         ("career_ledger", "effect", "TEXT NOT NULL DEFAULT ''"),
         ("career_ledger", "counts_to_cap", "INTEGER NOT NULL DEFAULT 1"),
+        ("career_ledger", "safety_decision_id", "INTEGER"),
         ("career_incidents", "session_name", "TEXT"),
         ("career_incidents", "driver_id", "TEXT"),
         ("career_incidents", "kind", "TEXT"),
@@ -125,11 +173,22 @@ def migrate(con):
         ("career_incidents", "reviewed_at", "TEXT"),
         ("career_safety_decisions", "repair_ledger_id", "INTEGER"),
         ("career_safety_decisions", "transfer_ledger_id", "INTEGER"),
+        ("career_safety_decisions", "reserve_transfer_ledger_id", "INTEGER"),
         ("career_safety_decisions", "funded_at", "TEXT"),
+        ("career_safety_decisions", "funded_round_number", "INTEGER"),
         ("career_safety_decisions", "review_requested_at", "TEXT"),
         ("career_safety_decisions", "source_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("career_safety_decisions", "assumption_catalog_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("career_safety_decisions", "profile_snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("career_safety_decisions", "funding_snapshot_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ("career_safety_decisions", "decision_fingerprint", "TEXT"),
     ):
         _add_column(con, table, name, definition)
+    con.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS career_safety_decision_fingerprint_unique "
+        "ON career_safety_decisions(decision_fingerprint)"
+    )
+    _ensure_prototype_funding_unique_index(con)
     _backfill_ledger_effects(con)
     con.commit()
 
@@ -148,14 +207,18 @@ def reset_career(con):
     con.commit()
 
 
-def _insert_ledger(con, round_number, session_name, category, amount, kind, note, effect, future_car=0, counts_to_cap=True):
+def _insert_ledger(
+    con, round_number, session_name, category, amount, kind, note, effect,
+    future_car=0, counts_to_cap=True, safety_decision_id=None,
+):
     cursor = con.execute(
         """INSERT INTO career_ledger
-        (round_number, session_name, category, amount, kind, note, future_car, created_at, effect, counts_to_cap)
-        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (round_number, session_name, category, amount, kind, note, future_car, created_at, effect,
+         counts_to_cap, safety_decision_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
         (
             round_number, session_name, category, float(amount), kind, note, int(future_car),
-            date.today().isoformat(), effect, int(counts_to_cap),
+            date.today().isoformat(), effect, int(counts_to_cap), safety_decision_id,
         ),
     )
     return int(cursor.lastrowid)
@@ -649,6 +712,421 @@ def _bounded_modelled_capacity(value, live_capacity):
     return min(numeric, max(0.0, float(live_capacity)))
 
 
+def _canonical_json(value):
+    """Serialize local audit values deterministically and reject non-finite data."""
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    )
+
+
+def _historical_context_text(value):
+    """Normalise an app-stored display field without adding a new fact."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _historical_context_number(value):
+    """Keep a finite non-negative pre-existing local estimate, if one exists."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return max(0.0, number)
+
+
+def _historical_context_flag(value):
+    """Read SQLite-style flags without treating arbitrary non-empty text as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def historical_incident_source_context(incident):
+    """Create a pure, bounded context snapshot for a historical repair record.
+
+    The snapshot intentionally has no incident id or database foreign key.  It
+    copies only a fixed list of app-held historical/context fields, labels the
+    existing cost band as a *local estimate*, and fingerprints that exact
+    payload.  It never adds a repair method, cost, duration, spare count,
+    inspection result, completion claim, or release decision.
+    """
+    try:
+        record = dict(incident)
+    except (TypeError, ValueError) as error:
+        raise ValueError("A historical incident record is required for this launcher.") from error
+
+    if (_historical_context_text(record.get("kind")) or "").lower() == "manual":
+        raise ValueError("A local manual entry cannot be used as historical incident context.")
+    if not _historical_context_flag(record.get("repair_required")):
+        raise ValueError("Only historical records marked repair-required can start a prototype case.")
+    try:
+        round_number = int(record.get("round_number"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("The historical record has no valid round number.") from error
+    title = _historical_context_text(record.get("title"))
+    if not title:
+        raise ValueError("The historical record has no title to preserve.")
+
+    low = _historical_context_number(record.get("cost_low"))
+    high = _historical_context_number(record.get("cost_high"))
+    if low is not None and high is not None:
+        high = max(low, high)
+    facts = {
+        "round_number": round_number,
+        "title": title,
+        "session_name": _historical_context_text(record.get("session_name")),
+        "driver_id": _historical_context_text(record.get("driver_id")),
+        "incident_kind": _historical_context_text(record.get("kind")),
+        "reason": _historical_context_text(record.get("reason")),
+        "responsible": _historical_context_text(record.get("responsible")),
+        "damage_area": _historical_context_text(record.get("components")),
+        "source": _historical_context_text(record.get("source")),
+        "source_url": _historical_context_text(record.get("source_url")),
+        "record_state_at_launch": _historical_context_text(record.get("state")),
+        "repair_required": True,
+        "project_safety_critical": _historical_context_flag(record.get("safety_critical")),
+        "app_local_category": _historical_context_text(record.get("category")),
+        "preexisting_local_estimate": {
+            "low_cad": low,
+            "high_cad": high,
+            "label": _historical_context_text(record.get("estimate_label")),
+        },
+    }
+    payload = {
+        "schema": HISTORICAL_INCIDENT_CONTEXT_SCHEMA,
+        "origin": HISTORICAL_INCIDENT_CONTEXT_ORIGIN,
+        "display_label": f"Historical incident context · Round {round_number} · {title}",
+        "facts": facts,
+        "data_boundary": (
+            "App-preserved historical context only. It does not establish repair method, cost, "
+            "duration, spare inventory, component condition, inspection/sign-off, completion, "
+            "or vehicle release."
+        ),
+    }
+    return {
+        **payload,
+        "sha256": hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest(),
+    }
+
+
+def _validate_historical_context_reference(source_ref, source_context):
+    """Validate the bounded launcher snapshot before it becomes a decision basis.
+
+    This verifies only that the app-preserved context has not been detached from
+    its own schema/origin/hash convention. It does not turn local context into
+    external source verification or a claim about a real repair.
+    """
+    reference = str(source_ref or "")
+    context = source_context if isinstance(source_context, dict) else None
+    is_historical_reference = reference.startswith("historical-context:")
+    is_historical_context = bool(context) and (
+        context.get("schema") == HISTORICAL_INCIDENT_CONTEXT_SCHEMA
+        or context.get("origin") == HISTORICAL_INCIDENT_CONTEXT_ORIGIN
+    )
+    if reference.startswith("historical:"):
+        raise ValueError(
+            "Historical source references must use a bounded historical-context launcher snapshot."
+        )
+    if not is_historical_reference and not is_historical_context:
+        return
+    if not is_historical_reference:
+        raise ValueError(
+            "An app-preserved historical context must use its matching historical-context source reference."
+        )
+    if context is None:
+        raise ValueError("A historical-context source reference needs its bounded context snapshot.")
+
+    expected_keys = {
+        "schema", "origin", "display_label", "facts", "data_boundary", "sha256",
+    }
+    if set(context) != expected_keys:
+        raise ValueError(
+            "The historical-context snapshot has unexpected or missing fields and cannot be recorded."
+        )
+    if context.get("schema") != HISTORICAL_INCIDENT_CONTEXT_SCHEMA:
+        raise ValueError("The historical-context snapshot has an unsupported schema.")
+    if context.get("origin") != HISTORICAL_INCIDENT_CONTEXT_ORIGIN:
+        raise ValueError("The historical-context snapshot has an unsupported origin.")
+    if not isinstance(context.get("facts"), dict):
+        raise ValueError("The historical-context snapshot has no readable app-preserved facts.")
+
+    payload = {
+        "schema": context["schema"],
+        "origin": context["origin"],
+        "display_label": context["display_label"],
+        "facts": context["facts"],
+        "data_boundary": context["data_boundary"],
+    }
+    recorded_hash = context.get("sha256")
+    if not isinstance(recorded_hash, str) or len(recorded_hash) != 64:
+        raise ValueError("The historical-context snapshot has no valid SHA-256 fingerprint.")
+    try:
+        computed_hash = hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"The historical-context snapshot cannot be fingerprinted. ({error})"
+        ) from error
+    if computed_hash != recorded_hash.lower():
+        raise ValueError(
+            "The historical-context snapshot does not match its recorded SHA-256 fingerprint."
+        )
+    if reference != f"historical-context:{computed_hash}":
+        raise ValueError(
+            "The historical-context source reference does not match its bounded snapshot fingerprint."
+        )
+
+
+def _decision_fingerprint(
+    round_number, source_ref, source_label, source_context, profile_id, option_id,
+    funding_source, evaluation, catalog_identity, profile_snapshot,
+):
+    """Return a stable unique identity for one immutable local decision basis."""
+    payload = {
+        "round_number": int(round_number),
+        "source_ref": str(source_ref or ""),
+        "source_label": str(source_label or "Prototype case"),
+        "source_context": source_context if isinstance(source_context, dict) else {},
+        "profile_id": str(profile_id or ""),
+        "option_id": str(option_id or ""),
+        "funding_source": str(funding_source or ""),
+        "evaluation": evaluation,
+        "assumption_catalog": catalog_identity,
+        "profile_snapshot": profile_snapshot,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _decision_fingerprint_check(decision):
+    """Recompute a saved plan's local decision-basis fingerprint.
+
+    The prototype uses a local SQLite database, so this is deliberately a
+    *consistency/tamper-evidence* check rather than a claim of tamper-proof or
+    externally verified storage.  It makes an accidental or untracked change
+    to the frozen fields visible before they can be used to create funding
+    ledger entries.
+    """
+    if not isinstance(decision, dict):
+        return {
+            "state": "UNVERIFIABLE",
+            "matches": False,
+            "recorded_fingerprint": None,
+            "recomputed_fingerprint": None,
+            "message": "The saved prototype decision is not a readable record, so its local fingerprint cannot be checked.",
+        }
+
+    recorded = decision.get("decision_fingerprint")
+    if not isinstance(recorded, str) or not recorded.strip():
+        return {
+            "state": "LEGACY_UNVERIFIABLE",
+            "matches": False,
+            "recorded_fingerprint": recorded,
+            "recomputed_fingerprint": None,
+            "message": (
+                "This saved prototype record has no decision-basis fingerprint. Re-record it under the "
+                "current local prototype workflow before funding."
+            ),
+        }
+    recorded = recorded.strip().lower()
+    if len(recorded) != 64 or any(character not in "0123456789abcdef" for character in recorded):
+        return {
+            "state": "UNVERIFIABLE",
+            "matches": False,
+            "recorded_fingerprint": recorded,
+            "recomputed_fingerprint": None,
+            "message": "The saved prototype decision has an invalid decision-basis fingerprint format.",
+        }
+
+    warnings = decision.get("integrity_warnings")
+    if warnings:
+        return {
+            "state": "UNVERIFIABLE",
+            "matches": False,
+            "recorded_fingerprint": recorded,
+            "recomputed_fingerprint": None,
+            "message": (
+                "The saved prototype decision has unreadable frozen data, so its local fingerprint cannot be "
+                "recomputed. Re-record the plan before funding."
+            ),
+        }
+
+    frozen_values = {
+        "source_context": decision.get("source_context"),
+        "evaluation": decision.get("snapshot"),
+        "assumption_catalog": decision.get("assumption_catalog"),
+        "profile_snapshot": decision.get("profile_snapshot"),
+    }
+    invalid_values = [name for name, value in frozen_values.items() if not isinstance(value, dict)]
+    if invalid_values:
+        return {
+            "state": "UNVERIFIABLE",
+            "matches": False,
+            "recorded_fingerprint": recorded,
+            "recomputed_fingerprint": None,
+            "message": (
+                "The saved prototype decision is missing readable frozen "
+                f"{', '.join(invalid_values)} data, so its local fingerprint cannot be recomputed."
+            ),
+        }
+
+    try:
+        recomputed = _decision_fingerprint(
+            decision.get("round_number"),
+            decision.get("source_ref"),
+            decision.get("source_label"),
+            frozen_values["source_context"],
+            decision.get("profile_id"),
+            decision.get("option_id"),
+            decision.get("funding_source"),
+            frozen_values["evaluation"],
+            frozen_values["assumption_catalog"],
+            frozen_values["profile_snapshot"],
+        )
+    except (TypeError, ValueError) as error:
+        return {
+            "state": "UNVERIFIABLE",
+            "matches": False,
+            "recorded_fingerprint": recorded,
+            "recomputed_fingerprint": None,
+            "message": (
+                "The saved prototype decision contains values that cannot be checked against its local "
+                f"fingerprint. Re-record the plan before funding. ({error})"
+            ),
+        }
+
+    if recomputed != recorded:
+        return {
+            "state": "MISMATCH",
+            "matches": False,
+            "recorded_fingerprint": recorded,
+            "recomputed_fingerprint": recomputed,
+            "message": (
+                "The saved prototype decision fields no longer match their recorded local fingerprint. "
+                "Do not fund this record; re-record the plan from the displayed assumptions."
+            ),
+        }
+    return {
+        "state": "MATCHED",
+        "matches": True,
+        "recorded_fingerprint": recorded,
+        "recomputed_fingerprint": recomputed,
+        "message": "Saved plan fields match the recorded local decision-basis fingerprint.",
+    }
+
+
+def _append_external_hold(evaluation, code, label, category="integrity", detail=None):
+    """Add a durable non-engineering hold condition to a rule-engine result."""
+    updated = dict(evaluation)
+    blockers = list(updated.get("blockers") or [])
+    gaps = list(updated.get("gaps") or [])
+    if not any(item.get("code") == code for item in gaps if isinstance(item, dict)):
+        gap = {"code": code, "label": label, "category": category}
+        if detail:
+            gap["detail"] = detail
+        gaps.append(gap)
+    if label not in blockers:
+        blockers.append(label)
+    updated.update({
+        "blockers": blockers,
+        "gaps": gaps,
+        "status": "HOLD",
+        "eligible_for_review": False,
+    })
+    return updated
+
+
+def _catalog_check(recorded_identity):
+    """Check whether the current editable catalog still matches a saved basis."""
+    if not isinstance(recorded_identity, dict) or not recorded_identity.get("sha256"):
+        return {
+            "state": "LEGACY_UNVERIFIABLE",
+            "matches": False,
+            "recorded": recorded_identity if isinstance(recorded_identity, dict) else {},
+            "current": None,
+            "message": (
+                "This saved record has no frozen assumptions fingerprint. Re-record it under the current "
+                "prototype assumptions before local funding."
+            ),
+        }
+    if recorded_identity.get("rules_engine_version") != safety_engine.RULES_ENGINE_VERSION:
+        return {
+            "state": "RULES_ENGINE_CHANGED",
+            "matches": False,
+            "recorded": recorded_identity,
+            "current": None,
+            "message": (
+                "The prototype rule-engine version changed after this record was saved. Re-record the plan "
+                "before local funding."
+            ),
+        }
+    try:
+        current = safety_engine.catalog_identity(safety_engine.load_assumptions())
+    except safety_engine.AssumptionError as error:
+        return {
+            "state": "CURRENT_CATALOG_UNAVAILABLE",
+            "matches": False,
+            "recorded": recorded_identity,
+            "current": None,
+            "message": (
+                "The current editable assumptions catalog cannot be verified. Restore a valid matching "
+                f"catalog before local funding. ({error})"
+            ),
+        }
+    if current["sha256"] != recorded_identity.get("sha256"):
+        return {
+            "state": "CATALOG_CHANGED",
+            "matches": False,
+            "recorded": recorded_identity,
+            "current": current,
+            "message": (
+                "The editable assumptions catalog changed after this plan was recorded. Re-record it under "
+                "the current catalog before local funding."
+            ),
+        }
+    return {
+        "state": "MATCHED",
+        "matches": True,
+        "recorded": recorded_identity,
+        "current": current,
+        "message": "Current catalog fingerprint matches the frozen local planning basis.",
+    }
+
+
+def _saved_profile_for_funding(decision):
+    """Restore the selected frozen assumptions; legacy unfrozen rows cannot fund."""
+    snapshot = decision.get("profile_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot:
+        raise ValueError(
+            "This saved prototype record has no immutable rule snapshot. Re-record it under the current "
+            "assumptions before local funding."
+        )
+    return safety_engine.profile_from_frozen_snapshot(
+        snapshot, decision.get("profile_id"), decision.get("option_id")
+    )
+
+
+def _invalid_live_evaluation(
+    reason, code="SAVED_RECORD_INVALID", catalog_check=None, decision_fingerprint_check=None,
+):
+    return {
+        "status": "HOLD",
+        "eligible_for_review": False,
+        "blockers": [reason],
+        "gaps": [{"code": code, "label": reason, "category": "integrity", "detail": reason}],
+        "catalog_check": catalog_check,
+        "decision_fingerprint_check": decision_fingerprint_check,
+        "disclaimer": (
+            "Prototype planning result only. Human engineering review remains required; "
+            "this does not certify, release, or predict the safety of a vehicle."
+        ),
+    }
+
+
 def record_safety_decision(
     con, source_ref, source_label, source_context, funding_source, profile_id, option_id, case_inputs
 ):
@@ -658,60 +1136,101 @@ def record_safety_decision(
     rules engine calculates it again from the current, visibly editable inputs.
     Repeated clicks with the same round/case/input snapshot are idempotent.
     """
-    state = active_state(con)
-    if not state or state["status"] != "active":
-        raise ValueError("Start an active replay before recording a prototype planning decision.")
-    funding_source = str(funding_source or "")
-    if funding_source not in CATEGORIES:
-        raise ValueError("Choose a valid local funding source category.")
-    profile = safety_engine.profile_for(str(profile_id or ""))
-    # An invalid stale Streamlit option must never become a persistent record.
-    safety_engine.option_for(profile, str(option_id or ""))
-    inputs = dict(case_inputs) if isinstance(case_inputs, dict) else {}
-    # These values are never trusted from the UI. They are derived from the
-    # live local ledger at the instant the decision is recorded.
-    live_source_capacity = funding_source_capacity(con, funding_source)
-    inputs.update({
-        "funding_source": funding_source,
-        "reserve_before": crash_contingency(con)["remaining"],
-        "funding_capacity": _bounded_modelled_capacity(
-            inputs.get("funding_capacity"), live_source_capacity
-        ),
-        "live_source_capacity": live_source_capacity,
-        "cap_headroom": max(0.0, CAP - total_spend(con)),
-    })
-    evaluation = safety_engine.evaluate_option(profile, str(option_id), inputs)
-    snapshot_json = json.dumps(evaluation, sort_keys=True)
-    source_context_json = json.dumps(
-        source_context if isinstance(source_context, dict) else {}, sort_keys=True
-    )
-    common = (
-        int(state["current_round"]), str(source_ref or ""), str(source_label or "Prototype case"),
-        source_context_json, str(profile_id), str(option_id), funding_source, snapshot_json,
-    )
-    existing = con.execute(
-        """SELECT id FROM career_safety_decisions
-        WHERE round_number = ? AND source_ref = ? AND source_label = ?
-          AND source_context_json = ? AND profile_id = ? AND option_id = ?
-          AND funding_source = ? AND snapshot_json = ?
-        ORDER BY id DESC LIMIT 1""",
-        common,
-    ).fetchone()
-    if existing:
-        return {"id": int(existing["id"]), "evaluation": evaluation, "created": False}
-    cursor = con.execute(
-        """INSERT INTO career_safety_decisions
-        (round_number, source_ref, source_label, source_context_json, profile_id, option_id,
-         funding_source, status, blockers_json, snapshot_json, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            common[0], common[1], common[2], common[3], common[4], common[5], common[6],
-            evaluation["status"], json.dumps(evaluation["blockers"]), snapshot_json,
-            date.today().isoformat(),
-        ),
-    )
-    con.commit()
-    return {"id": int(cursor.lastrowid), "evaluation": evaluation, "created": True}
+    fingerprint = None
+    evaluation = None
+    try:
+        # The unique fingerprint is the durable backstop; this lock also makes
+        # repeated clicks from separate Streamlit tabs deterministic.
+        con.execute("BEGIN IMMEDIATE")
+        state = active_state(con)
+        if not state or state["status"] != "active":
+            raise ValueError("Start an active replay before recording a prototype planning decision.")
+        funding_source = str(funding_source or "")
+        if funding_source not in CATEGORIES:
+            raise ValueError("Choose a valid local funding source category.")
+        source_ref = str(source_ref or "")
+        source_context_value = source_context if isinstance(source_context, dict) else {}
+        _validate_historical_context_reference(source_ref, source_context_value)
+        catalog = safety_engine.load_assumptions()
+        catalog_identity = safety_engine.catalog_identity(catalog)
+        profile = safety_engine.profile_for(str(profile_id or ""), catalog["profiles"])
+        # An invalid stale Streamlit option must never become a persistent record.
+        safety_engine.option_for(profile, str(option_id or ""))
+        frozen_profile = safety_engine.frozen_profile_snapshot(profile, str(option_id))
+        inputs = dict(case_inputs) if isinstance(case_inputs, dict) else {}
+        # These values are never trusted from the UI. They are derived from the
+        # live local ledger at the instant the decision is recorded.
+        live_source_capacity = funding_source_capacity(con, funding_source)
+        inputs.update({
+            "funding_source": funding_source,
+            "reserve_before": crash_contingency(con)["remaining"],
+            "funding_capacity": _bounded_modelled_capacity(
+                inputs.get("funding_capacity"), live_source_capacity
+            ),
+            "live_source_capacity": live_source_capacity,
+            "cap_headroom": max(0.0, CAP - total_spend(con)),
+        })
+        evaluation = safety_engine.evaluate_option(profile, str(option_id), inputs)
+        evaluation["assumption_catalog"] = catalog_identity
+        evaluation["frozen_rule_basis"] = {
+            "profile_id": frozen_profile["id"],
+            "option_id": str(option_id),
+            "profile_sha256": hashlib.sha256(
+                _canonical_json(frozen_profile).encode("utf-8")
+            ).hexdigest(),
+        }
+        source_context_json = _canonical_json(source_context_value)
+        snapshot_json = _canonical_json(evaluation)
+        catalog_json = _canonical_json(catalog_identity)
+        profile_snapshot_json = _canonical_json(frozen_profile)
+        fingerprint = _decision_fingerprint(
+            state["current_round"], source_ref, source_label, source_context_value,
+            profile_id, option_id, funding_source, evaluation, catalog_identity, frozen_profile,
+        )
+        existing = con.execute(
+            "SELECT id FROM career_safety_decisions WHERE decision_fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        if existing:
+            con.commit()
+            return {"id": int(existing["id"]), "evaluation": evaluation, "created": False}
+        cursor = con.execute(
+            """INSERT INTO career_safety_decisions
+            (round_number, source_ref, source_label, source_context_json, profile_id, option_id,
+             funding_source, status, blockers_json, snapshot_json, assumption_catalog_json,
+             profile_snapshot_json, decision_fingerprint, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                int(state["current_round"]), str(source_ref or ""),
+                str(source_label or "Prototype case"), source_context_json, str(profile_id),
+                str(option_id), funding_source, evaluation["status"],
+                _canonical_json(evaluation["blockers"]), snapshot_json, catalog_json,
+                profile_snapshot_json, fingerprint, date.today().isoformat(),
+            ),
+        )
+        con.commit()
+        return {"id": int(cursor.lastrowid), "evaluation": evaluation, "created": True}
+    except sqlite3.IntegrityError:
+        if con.in_transaction:
+            con.rollback()
+        if fingerprint:
+            existing = con.execute(
+                "SELECT id FROM career_safety_decisions WHERE decision_fingerprint = ?", (fingerprint,)
+            ).fetchone()
+            if existing:
+                return {"id": int(existing["id"]), "evaluation": evaluation or {}, "created": False}
+        raise
+    except sqlite3.OperationalError as error:
+        if con.in_transaction:
+            con.rollback()
+        busy_codes = {getattr(sqlite3, "SQLITE_BUSY", None), getattr(sqlite3, "SQLITE_LOCKED", None)}
+        if getattr(error, "sqlite_errorcode", None) in busy_codes or "locked" in str(error).lower():
+            raise ValueError("The local prototype ledger is busy. Wait a moment and record the plan once more.") from error
+        raise
+    except Exception:
+        if con.in_transaction:
+            con.rollback()
+        raise
 
 
 def safety_decisions(con, limit=20):
@@ -722,32 +1241,73 @@ def safety_decisions(con, limit=20):
     records = []
     for row in rows:
         item = dict(row)
-        try:
-            item["blockers"] = json.loads(item.pop("blockers_json"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            item["blockers"] = []
-            item.pop("blockers_json", None)
-        try:
-            item["snapshot"] = json.loads(item.pop("snapshot_json"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            item["snapshot"] = {}
-            item.pop("snapshot_json", None)
-        try:
-            item["source_context"] = json.loads(item.pop("source_context_json"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            item["source_context"] = {}
-            item.pop("source_context_json", None)
+        warnings = []
+
+        def decode(column, key, expected_type, fallback):
+            raw = item.pop(column, None)
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                warnings.append(f"{column} is not valid JSON.")
+                value = fallback
+            if not isinstance(value, expected_type):
+                warnings.append(f"{column} has an unexpected JSON type.")
+                value = fallback
+            item[key] = value
+
+        decode("blockers_json", "blockers", list, [])
+        decode("snapshot_json", "snapshot", dict, {})
+        decode("source_context_json", "source_context", dict, {})
+        decode("assumption_catalog_json", "assumption_catalog", dict, {})
+        decode("profile_snapshot_json", "profile_snapshot", dict, {})
+        decode("funding_snapshot_json", "funding_snapshot", dict, {})
+        item["integrity_warnings"] = warnings
         records.append(item)
     return records
 
 
 def _live_safety_evaluation(con, decision):
-    """Re-check mutable local finance conditions immediately before funding."""
+    """Re-check mutable finance against the record's frozen prototype basis."""
+    decision_fingerprint_check = _decision_fingerprint_check(decision)
+    catalog_check = _catalog_check(decision.get("assumption_catalog"))
+    if not decision_fingerprint_check["matches"]:
+        if decision.get("integrity_warnings"):
+            code = "SAVED_RECORD_INTEGRITY"
+        else:
+            code = (
+                "DECISION_FINGERPRINT_MISMATCH"
+                if decision_fingerprint_check["state"] == "MISMATCH"
+                else "DECISION_FINGERPRINT_UNVERIFIABLE"
+            )
+        return _invalid_live_evaluation(
+            decision_fingerprint_check["message"], code, catalog_check, decision_fingerprint_check,
+        )
+
+    try:
+        _validate_historical_context_reference(
+            decision.get("source_ref"), decision.get("source_context"),
+        )
+    except ValueError as error:
+        return _invalid_live_evaluation(
+            str(error), "HISTORICAL_CONTEXT_INVALID", catalog_check, decision_fingerprint_check,
+        )
+
     snapshot = _safety_snapshot_value(decision.get("snapshot"), {})
     inputs = _safety_snapshot_value(snapshot.get("case_inputs"), {}).copy()
     source = str(decision.get("funding_source") or "")
     if source not in CATEGORIES:
-        raise ValueError("The saved prototype record does not have a valid funding source.")
+        return _invalid_live_evaluation(
+            "The saved prototype record does not have a valid local funding source.",
+            "SAVED_SOURCE_INVALID",
+            catalog_check,
+            decision_fingerprint_check,
+        )
+    try:
+        profile = _saved_profile_for_funding(decision)
+    except ValueError as error:
+        return _invalid_live_evaluation(
+            str(error), "FROZEN_RULE_BASIS_INVALID", catalog_check, decision_fingerprint_check,
+        )
     live_source_capacity = funding_source_capacity(con, source)
     inputs.update({
         "funding_source": source,
@@ -758,8 +1318,413 @@ def _live_safety_evaluation(con, decision):
         "live_source_capacity": live_source_capacity,
         "cap_headroom": max(0.0, CAP - total_spend(con)),
     })
-    profile = safety_engine.profile_for(str(decision.get("profile_id") or ""))
-    return safety_engine.evaluate_option(profile, str(decision.get("option_id") or ""), inputs)
+    evaluation = safety_engine.evaluate_option(profile, str(decision.get("option_id") or ""), inputs)
+    evaluation["assumption_catalog"] = decision.get("assumption_catalog", {})
+    evaluation["catalog_check"] = catalog_check
+    evaluation["decision_fingerprint_check"] = decision_fingerprint_check
+    evaluation["frozen_rule_basis"] = snapshot.get("frozen_rule_basis", {})
+    if not catalog_check["matches"]:
+        evaluation = _append_external_hold(
+            evaluation, "CATALOG_DRIFT", catalog_check["message"], "integrity"
+        )
+    if int(decision.get("round_number") or 0) != int(active_state(con)["current_round"]):
+        evaluation = _append_external_hold(
+            evaluation,
+            "ROUND_CHANGED",
+            "This prototype plan was recorded for an earlier replay round. Re-record it for the current round before local funding.",
+            "workflow",
+        )
+    for warning in decision.get("integrity_warnings", []):
+        evaluation = _append_external_hold(
+            evaluation, "SAVED_RECORD_INTEGRITY", f"Saved prototype record integrity warning: {warning}",
+            "integrity",
+        )
+    return evaluation
+
+
+def _correlated_safety_ledger_entries(con, decision_id):
+    """Return every local ledger row tied to a decision, including corrupt roles.
+
+    The funding pointers are useful display fields but cannot be the sole
+    idempotency authority: a locally editable database can contain correlated
+    rows even when those pointers were cleared or damaged.
+    """
+    return [dict(row) for row in con.execute(
+        "SELECT * FROM career_ledger WHERE safety_decision_id = ? ORDER BY id", (int(decision_id),)
+    ).fetchall()]
+
+
+def safety_decision_live_check(con, decision_id):
+    """Return a visible current funding check without mutating a saved record."""
+    decision = next(
+        (item for item in safety_decisions(con, limit=10_000) if item["id"] == int(decision_id)), None
+    )
+    if not decision:
+        raise ValueError("Choose a saved prototype planning record.")
+    if decision.get("repair_ledger_id") is not None:
+        decision_fingerprint_check = _decision_fingerprint_check(decision)
+        return {
+            "status": "REVIEW_REQUESTED" if decision_fingerprint_check["matches"] else "CHECK_REQUIRED",
+            "eligible_for_review": False,
+            "blockers": [] if decision_fingerprint_check["matches"] else [decision_fingerprint_check["message"]],
+            "gaps": [],
+            "catalog_check": _catalog_check(decision.get("assumption_catalog")),
+            "decision_fingerprint_check": decision_fingerprint_check,
+            "message": (
+                "This local funding record was already created; no second funding action is available."
+                if decision_fingerprint_check["matches"]
+                else "This already-funded local record needs an integrity check; no second funding action is available."
+            ),
+        }
+    correlated_entries = _correlated_safety_ledger_entries(con, decision["id"])
+    if correlated_entries:
+        decision_fingerprint_check = _decision_fingerprint_check(decision)
+        return _invalid_live_evaluation(
+            "This prototype record already has correlated local ledger entries but no repair-funding pointer. "
+            "Inspect its receipt; no second funding action is available.",
+            "FUNDING_LEDGER_ALREADY_PRESENT",
+            _catalog_check(decision.get("assumption_catalog")),
+            decision_fingerprint_check,
+        )
+    return _live_safety_evaluation(con, decision)
+
+
+def _decision_ledger_entries(con, decision):
+    """Return the ledger evidence correlated to one prototype decision."""
+    ids = [
+        value for value in (
+            decision.get("repair_ledger_id"), decision.get("transfer_ledger_id"),
+            decision.get("reserve_transfer_ledger_id"),
+        ) if value is not None
+    ]
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    return [dict(row) for row in con.execute(
+        f"SELECT * FROM career_ledger WHERE id IN ({placeholders}) ORDER BY id", tuple(ids)
+    ).fetchall()]
+
+
+def _audit_integer(value):
+    """Return a SQLite-style integer identifier, or ``None`` when malformed."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric) or not numeric.is_integer():
+        return None
+    return int(numeric)
+
+
+def _audit_amount(value, label, errors, positive=False, allow_negative=False):
+    """Decode one audit amount without letting corrupted local rows crash a receipt."""
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        errors.append(f"{label} is not a numeric CAD amount.")
+        return None
+    if not math.isfinite(amount):
+        errors.append(f"{label} is not a finite CAD amount.")
+        return None
+    if positive and amount <= 0:
+        errors.append(f"{label} must be a positive CAD amount.")
+        return None
+    if not positive and not allow_negative and amount < 0:
+        errors.append(f"{label} cannot be negative.")
+        return None
+    return amount
+
+
+def _funding_snapshot_basis_integrity(decision, funding_snapshot, errors):
+    """Bind funded amounts to the original fingerprinted planning basis.
+
+    A funding snapshot records mutable live-finance facts at commit time, such
+    as reserve and current source capacity.  The selected option, its modelled
+    cost/resource values, transfer, and frozen rule basis must still agree with
+    the original saved decision.  Otherwise a coordinated local edit to a
+    ledger and funding snapshot could appear internally consistent while no
+    longer representing the recorded plan.
+    """
+    recorded = decision.get("snapshot")
+    if not isinstance(recorded, dict):
+        errors.append("The frozen saved decision snapshot is not a JSON object.")
+        return {}
+
+    for field in ("profile_id", "option_id"):
+        if funding_snapshot.get(field) != recorded.get(field):
+            errors.append(
+                f"Funding snapshot {field} does not match the frozen saved decision basis."
+            )
+
+    def compare_amount(field, positive=False):
+        expected = _audit_amount(
+            recorded.get(field), f"Frozen saved decision {field}", errors, positive=positive,
+        )
+        actual = _audit_amount(
+            funding_snapshot.get(field), f"Funding snapshot {field}", errors, positive=positive,
+        )
+        if expected is not None and actual is not None and not math.isclose(
+            expected, actual, rel_tol=0.0, abs_tol=0.01
+        ):
+            errors.append(
+                f"Funding snapshot {field} does not match the frozen saved decision basis."
+            )
+        return actual
+
+    values = {
+        "estimated_cost_cad": compare_amount("estimated_cost_cad", positive=True),
+        "planned_transfer_cad": compare_amount("planned_transfer_cad"),
+        "estimated_work_hours": compare_amount("estimated_work_hours"),
+        "spares_required": compare_amount("spares_required"),
+        "reserve_floor_cad": compare_amount("reserve_floor_cad"),
+    }
+    if funding_snapshot.get("frozen_rule_basis") != recorded.get("frozen_rule_basis"):
+        errors.append("Funding snapshot frozen_rule_basis does not match the frozen saved decision basis.")
+
+    recorded_inputs = recorded.get("case_inputs")
+    funding_inputs = funding_snapshot.get("case_inputs")
+    if not isinstance(recorded_inputs, dict) or not isinstance(funding_inputs, dict):
+        errors.append("Funding snapshot case inputs cannot be compared with the frozen saved decision basis.")
+    else:
+        expected_source = str(recorded_inputs.get("funding_source") or "")
+        actual_source = str(funding_inputs.get("funding_source") or "")
+        decision_source = str(decision.get("funding_source") or "")
+        if expected_source != decision_source or actual_source != decision_source:
+            errors.append("Funding snapshot funding source does not match the frozen saved decision basis.")
+    return values
+
+
+def _safety_ledger_link_integrity(con, decision, ledger_entries):
+    """Audit a funded prototype record against its stored funding event.
+
+    The local database remains editable, so this is an *evidence consistency*
+    check, not tamper-proof accounting.  It deliberately reports malformed or
+    older rows as ``CHECK_REQUIRED`` evidence instead of raising while a judge
+    opens a receipt.
+    """
+    errors = list(decision.get("integrity_warnings", []))
+    role_to_column = {
+        "repair": "repair_ledger_id",
+        "transfer": "transfer_ledger_id",
+        "reserve_transfer": "reserve_transfer_ledger_id",
+    }
+    declared_ids = {}
+    used_ids = {}
+    for role, column in role_to_column.items():
+        raw_id = decision.get(column)
+        if raw_id is None:
+            declared_ids[role] = None
+            continue
+        ledger_id = _audit_integer(raw_id)
+        if ledger_id is None or ledger_id <= 0:
+            errors.append(f"Saved decision field {column} is not a valid ledger id.")
+            declared_ids[role] = None
+            continue
+        declared_ids[role] = ledger_id
+        if ledger_id in used_ids:
+            errors.append(
+                f"Ledger entry #{ledger_id} is declared for both {used_ids[ledger_id]} and {role}."
+            )
+        else:
+            used_ids[ledger_id] = role
+
+    entries_by_id = {entry.get("id"): entry for entry in ledger_entries}
+    decision_id = _audit_integer(decision.get("id"))
+    for role, ledger_id in declared_ids.items():
+        if ledger_id is None:
+            continue
+        entry = entries_by_id.get(ledger_id)
+        if entry is None:
+            errors.append(f"Missing linked local ledger row for {role}_ledger_id.")
+            continue
+        if _audit_integer(entry.get("safety_decision_id")) != decision_id:
+            errors.append(f"Ledger entry #{ledger_id} is not correlated to this decision id.")
+
+    correlated_entries = []
+    if decision_id is not None:
+        correlated_entries = [dict(row) for row in con.execute(
+            "SELECT * FROM career_ledger WHERE safety_decision_id = ? ORDER BY id", (decision_id,)
+        ).fetchall()]
+        declared_set = {ledger_id for ledger_id in declared_ids.values() if ledger_id is not None}
+        for entry in correlated_entries:
+            if entry.get("id") not in declared_set:
+                errors.append(
+                    f"Ledger entry #{entry['id']} is correlated to this decision but is not declared by its funding record."
+                )
+
+    # An unfunded candidate intentionally has neither a funding event nor any
+    # ledger rows.  Older funded rows remain viewable, but are flagged below if
+    # their event evidence is absent or incomplete.
+    has_funding_evidence = (
+        any(ledger_id is not None for ledger_id in declared_ids.values())
+        or decision.get("status") == "REVIEW_REQUESTED"
+        or bool(decision.get("funding_snapshot"))
+    )
+    if not has_funding_evidence:
+        return errors, correlated_entries
+
+    funding_snapshot = decision.get("funding_snapshot")
+    if not isinstance(funding_snapshot, dict):
+        errors.append("Funding snapshot is not a JSON object.")
+        return errors, correlated_entries
+    funding_event = funding_snapshot.get("funding_event")
+    if not isinstance(funding_event, dict):
+        errors.append("Funded prototype record has no valid funding_event snapshot.")
+        return errors, correlated_entries
+    funding_basis = _funding_snapshot_basis_integrity(decision, funding_snapshot, errors)
+
+    def snapshot_id_matches(field, role, required=False):
+        declared_id = declared_ids[role]
+        if field not in funding_event:
+            errors.append(f"Funding snapshot is missing {field}.")
+            return
+        event_id = _audit_integer(funding_event.get(field))
+        raw_event_id = funding_event.get(field)
+        if raw_event_id is not None and (event_id is None or event_id <= 0):
+            errors.append(f"Funding snapshot {field} is not a valid ledger id.")
+            return
+        if required and (declared_id is None or event_id is None):
+            errors.append(f"Funded prototype record is missing required {field} linkage.")
+            return
+        if event_id != declared_id:
+            errors.append(f"Funding snapshot {field} does not match the saved decision linkage.")
+
+    snapshot_id_matches("repair_ledger_id", "repair", required=True)
+    snapshot_id_matches("transfer_ledger_id", "transfer")
+    snapshot_id_matches("reserve_transfer_ledger_id", "reserve_transfer")
+
+    funded_round = _audit_integer(decision.get("funded_round_number"))
+    event_round = _audit_integer(funding_event.get("funded_round_number"))
+    decision_round = _audit_integer(decision.get("round_number"))
+    if decision_round is None or decision_round < 0:
+        errors.append("Saved decision round_number is not a valid replay round.")
+    if funded_round is None or funded_round < 0:
+        errors.append("Saved decision funded_round_number is not a valid replay round.")
+    if event_round is None or event_round < 0:
+        errors.append("Funding snapshot funded_round_number is not a valid replay round.")
+    elif funded_round != event_round:
+        errors.append("Funding snapshot funded_round_number does not match the saved decision.")
+    if decision_round is not None and funded_round is not None and decision_round != funded_round:
+        errors.append("Saved decision funded_round_number does not match the frozen decision round.")
+    if decision_round is not None and event_round is not None and decision_round != event_round:
+        errors.append("Funding snapshot funded_round_number does not match the frozen decision round.")
+
+    expected_cost = funding_basis.get("estimated_cost_cad")
+    expected_transfer = funding_basis.get("planned_transfer_cad")
+    expected_repair_category = None
+    frozen_profile = decision.get("profile_snapshot")
+    if isinstance(frozen_profile, dict) and frozen_profile.get("ledger_category") in CATEGORIES:
+        expected_repair_category = frozen_profile["ledger_category"]
+    else:
+        errors.append("Frozen prototype profile has no valid local repair ledger category.")
+    funding_source = str(decision.get("funding_source") or "")
+    if funding_source not in CATEGORIES:
+        errors.append("Saved decision has no valid local funding source category.")
+
+    def check_entry(role, expected_kind, expected_amount, expected_category, counts_to_cap):
+        ledger_id = declared_ids[role]
+        if ledger_id is None:
+            return
+        entry = entries_by_id.get(ledger_id)
+        if entry is None:
+            return
+        if entry.get("kind") != expected_kind:
+            errors.append(
+                f"Ledger entry #{ledger_id} kind is {entry.get('kind')!r}; expected {expected_kind!r}."
+            )
+        if expected_category is not None and entry.get("category") != expected_category:
+            errors.append(
+                f"Ledger entry #{ledger_id} category is {entry.get('category')!r}; expected {expected_category!r}."
+            )
+        actual_amount = _audit_amount(
+            entry.get("amount"), f"Ledger entry #{ledger_id} amount", errors, allow_negative=True
+        )
+        if actual_amount is not None and expected_amount is not None and not math.isclose(
+            actual_amount, expected_amount, rel_tol=0.0, abs_tol=0.01
+        ):
+            errors.append(
+                f"Ledger entry #{ledger_id} amount does not match the funding snapshot."
+            )
+        try:
+            actual_counts_to_cap = int(entry.get("counts_to_cap"))
+        except (TypeError, ValueError):
+            actual_counts_to_cap = None
+        if actual_counts_to_cap != int(counts_to_cap):
+            errors.append(
+                f"Ledger entry #{ledger_id} counts_to_cap does not match its prototype funding role."
+            )
+        entry_round = _audit_integer(entry.get("round_number"))
+        if event_round is not None and entry_round != event_round:
+            errors.append(
+                f"Ledger entry #{ledger_id} round_number does not match the funding snapshot."
+            )
+
+    check_entry(
+        "repair", "prototype_repair_plan", expected_cost, expected_repair_category, counts_to_cap=True
+    )
+    if expected_transfer is not None:
+        if expected_transfer > 0:
+            if declared_ids["transfer"] is None:
+                errors.append("Funding snapshot requires a source-reallocation ledger row, but none is linked.")
+            if declared_ids["reserve_transfer"] is None:
+                errors.append("Funding snapshot requires a reserve-transfer ledger row, but none is linked.")
+            check_entry(
+                "transfer", "prototype_funding_reallocation", -expected_transfer, funding_source,
+                counts_to_cap=True,
+            )
+            check_entry(
+                "reserve_transfer", "prototype_reserve_transfer", expected_transfer, funding_source,
+                counts_to_cap=False,
+            )
+        elif declared_ids["transfer"] is not None or declared_ids["reserve_transfer"] is not None:
+            errors.append(
+                "Funding snapshot records no transfer, but the saved decision links transfer ledger rows."
+            )
+    return errors, correlated_entries
+
+
+def safety_decision_packet(con, decision_id):
+    """Build a read-only JSON-ready local review-handoff receipt.
+
+    This is an auditable app record, not a message sent to a reviewer and not a
+    safety approval.  It deliberately includes the frozen planning basis and
+    linked ledger rows so a judge can inspect what the prototype actually did.
+    """
+    decision = next(
+        (item for item in safety_decisions(con, limit=10_000) if item["id"] == int(decision_id)), None
+    )
+    if not decision:
+        raise ValueError("Choose a saved prototype planning record.")
+    ledger_entries = _decision_ledger_entries(con, decision)
+    integrity_errors, correlated_entries = _safety_ledger_link_integrity(con, decision, ledger_entries)
+    decision_fingerprint_check = _decision_fingerprint_check(decision)
+    if not decision_fingerprint_check["matches"]:
+        integrity_errors.append(
+            "Decision-basis local consistency check: " + decision_fingerprint_check["message"]
+        )
+    return {
+        "packet_schema_version": "1.1",
+        "packet_type": "local_prototype_review_handoff",
+        "decision": decision,
+        "recorded_evaluation": decision.get("snapshot", {}),
+        "funding_recheck": decision.get("funding_snapshot", {}),
+        "current_catalog_check": _catalog_check(decision.get("assumption_catalog")),
+        "decision_fingerprint_check": decision_fingerprint_check,
+        "linked_local_ledger_entries": ledger_entries,
+        "correlated_local_ledger_entries": correlated_entries,
+        "ledger_link_integrity": {
+            "state": "OK" if not integrity_errors else "CHECK_REQUIRED",
+            "errors": integrity_errors,
+        },
+        "disclaimer": (
+            "This is a local prototype decision receipt. It is not sent to a human reviewer and does not "
+            "certify, release, approve, or predict the safety of a vehicle."
+        ),
+    }
 
 
 def fund_safety_decision(con, decision_id):
@@ -788,10 +1753,20 @@ def fund_safety_decision(con, decision_id):
                 "decision_id": int(raw_decision["id"]),
                 "repair_ledger_id": int(raw_decision["repair_ledger_id"]),
                 "transfer_ledger_id": raw_decision.get("transfer_ledger_id"),
+                "reserve_transfer_ledger_id": raw_decision.get("reserve_transfer_ledger_id"),
+                "funded_round_number": raw_decision.get("funded_round_number"),
                 "already_funded": True,
             }
             con.commit()
             return result
+        correlated_entries = _correlated_safety_ledger_entries(con, raw_decision["id"])
+        if correlated_entries:
+            entry_ids = ", ".join(f"#{entry['id']}" for entry in correlated_entries)
+            raise ValueError(
+                "This prototype record already has correlated local ledger entries "
+                f"({entry_ids}) but no repair-funding pointer. Inspect its receipt; no second funding "
+                "entry was created."
+            )
         if raw_decision.get("status") != "REVIEW_ELIGIBLE":
             raise ValueError("Only a saved prototype review-eligible plan can receive local modelled funding.")
         records = safety_decisions(con, limit=10_000)
@@ -800,17 +1775,17 @@ def fund_safety_decision(con, decision_id):
             raise ValueError("The saved prototype planning snapshot could not be read.")
         evaluation = _live_safety_evaluation(con, decision)
         if not evaluation["eligible_for_review"]:
-            con.execute(
-                "UPDATE career_safety_decisions SET status = ?, blockers_json = ? WHERE id = ?",
-                ("HOLD", json.dumps(evaluation["blockers"]), int(decision_id)),
+            raise ValueError(
+                "The current local funding check is HOLD; no ledger entry was created: "
+                + " ".join(evaluation["blockers"])
             )
-            con.commit()
-            raise ValueError("Local conditions changed; the plan is now held: " + " ".join(evaluation["blockers"]))
 
-        profile = safety_engine.profile_for(str(decision["profile_id"]))
-        repair_category = str(profile.get("ledger_category") or "Other")
+        profile = _saved_profile_for_funding(decision)
+        repair_category = str(profile.get("ledger_category") or "")
         if repair_category not in CATEGORIES:
-            repair_category = "Other"
+            raise ValueError(
+                "The frozen prototype rule basis has an invalid local ledger category. Re-record the plan."
+            )
         source = str(decision["funding_source"])
         cost = float(evaluation["estimated_cost_cad"])
         transfer = float(evaluation["planned_transfer_cad"])
@@ -822,37 +1797,47 @@ def fund_safety_decision(con, decision_id):
             cost, "prototype_repair_plan",
             f"Modelled prototype plan: {evaluation['profile_label']} — {evaluation['option_label']}",
             "Editable prototype scenario cost recorded in the local ledger only; human review remains required and historical results are unchanged.",
-            counts_to_cap=True,
+            counts_to_cap=True, safety_decision_id=int(decision_id),
         )
         transfer_ledger_id = None
+        reserve_transfer_ledger_id = None
         if transfer > 0:
             transfer_ledger_id = _insert_ledger(
                 con, int(state["current_round"]), "Prototype repair planner", source,
                 -transfer, "prototype_funding_reallocation",
                 f"Modelled reprioritisation for prototype plan #{decision_id}",
                 f"Local planning transfer from {source}; it reduces only this app's planned-spend ledger and does not alter the historical replay.",
-                counts_to_cap=True,
+                counts_to_cap=True, safety_decision_id=int(decision_id),
             )
-            _insert_ledger(
+            reserve_transfer_ledger_id = _insert_ledger(
                 con, int(state["current_round"]), "Prototype repair planner", source,
                 transfer, "prototype_reserve_transfer",
                 f"Modelled reserve transfer for prototype plan #{decision_id}",
                 "Local prototype reserve top-up recorded for the selected planning floor; it is not real team accounting or a safety approval.",
-                counts_to_cap=False,
+                counts_to_cap=False, safety_decision_id=int(decision_id),
             )
             con.execute(
                 "UPDATE career_state SET crash_reserve_target = crash_reserve_target + ? WHERE id = 1",
                 (transfer,),
-            )
+        )
         today = date.today().isoformat()
+        funding_snapshot = dict(evaluation)
+        funding_snapshot["funding_event"] = {
+            "funded_round_number": int(state["current_round"]),
+            "repair_ledger_id": repair_ledger_id,
+            "transfer_ledger_id": transfer_ledger_id,
+            "reserve_transfer_ledger_id": reserve_transfer_ledger_id,
+        }
         con.execute(
             """UPDATE career_safety_decisions
             SET status = ?, blockers_json = ?, repair_ledger_id = ?, transfer_ledger_id = ?,
-                funded_at = ?, review_requested_at = ?
+                reserve_transfer_ledger_id = ?, funded_at = ?, funded_round_number = ?,
+                review_requested_at = ?, funding_snapshot_json = ?
             WHERE id = ?""",
             (
-                "REVIEW_REQUESTED", json.dumps([]), repair_ledger_id, transfer_ledger_id,
-                today, today, int(decision_id),
+                "REVIEW_REQUESTED", _canonical_json([]), repair_ledger_id, transfer_ledger_id,
+                reserve_transfer_ledger_id, today, int(state["current_round"]), today,
+                _canonical_json(funding_snapshot), int(decision_id),
             ),
         )
         con.commit()
@@ -860,13 +1845,18 @@ def fund_safety_decision(con, decision_id):
             "decision_id": int(decision_id),
             "repair_ledger_id": repair_ledger_id,
             "transfer_ledger_id": transfer_ledger_id,
+            "reserve_transfer_ledger_id": reserve_transfer_ledger_id,
+            "funded_round_number": int(state["current_round"]),
             "already_funded": False,
             "evaluation": evaluation,
         }
     except sqlite3.OperationalError as error:
         if con.in_transaction:
             con.rollback()
-        raise ValueError("The local prototype ledger is busy. Wait a moment and try funding once more.") from error
+        busy_codes = {getattr(sqlite3, "SQLITE_BUSY", None), getattr(sqlite3, "SQLITE_LOCKED", None)}
+        if getattr(error, "sqlite_errorcode", None) in busy_codes or "locked" in str(error).lower():
+            raise ValueError("The local prototype ledger is busy. Wait a moment and try funding once more.") from error
+        raise
     except Exception:
         if con.in_transaction:
             con.rollback()
