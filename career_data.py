@@ -1,4 +1,4 @@
-"""Local reference data for the 2025 F1 Season Budget Simulation.
+"""Local reference data for the 2025 F1 Season Budget Replay.
 
 The simulator is intentionally offline.  Championship results, weather and weekend
 notes are stored as compact local reference data; financial values and incident costs
@@ -7,6 +7,7 @@ are gameplay estimates, not FIA filings or team accounts.
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
 
 CAP = 215_000_000.0
@@ -21,6 +22,47 @@ ASSET_ROOT = Path(__file__).with_name("assets") / "drivers"
 DATA_ROOT = Path(__file__).with_name("data")
 with (DATA_ROOT / "historical_2025.json").open(encoding="utf-8") as historical_file:
     HISTORICAL_2025 = json.load(historical_file)
+
+# The replay bundle is deliberately separate from the compact legacy reference data.
+# It contains the full, immutable 20-car classifications used by the historical-replay
+# mode.  Keeping it local means that running the app never makes a network request.
+REPLAY_PATH = DATA_ROOT / "historical_2025_replay.json"
+INCIDENTS_PATH = DATA_ROOT / "incidents_2025.json"
+WEEKEND_CONTEXT_PATH = DATA_ROOT / "historical_weekend_context_2025.json"
+REPLAY_2025 = json.loads(REPLAY_PATH.read_text(encoding="utf-8")) if REPLAY_PATH.exists() else {"rounds": {}}
+INCIDENTS_2025 = json.loads(INCIDENTS_PATH.read_text(encoding="utf-8")) if INCIDENTS_PATH.exists() else {"incidents": []}
+WEEKEND_CONTEXT_2025 = (
+    json.loads(WEEKEND_CONTEXT_PATH.read_text(encoding="utf-8"))
+    if WEEKEND_CONTEXT_PATH.exists()
+    else {"rounds": {}}
+)
+
+
+def _driver_name_key(value):
+    value = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii")
+    return "".join(character.lower() for character in value if character.isalnum())
+
+
+_REPLAY_DRIVER_IDS_BY_NAME = {
+    _driver_name_key(details.get("name", driver_id)): driver_id
+    for driver_id, details in REPLAY_2025.get("drivers", {}).items()
+}
+_DRIVER_ID_ALIASES = {
+    "alex_albon": "alexander_albon",
+    "kimi_antonelli": "andrea_kimi_antonelli",
+}
+for _legacy_id, _legacy_name in HISTORICAL_2025.get("drivers", {}).items():
+    _canonical_id = _REPLAY_DRIVER_IDS_BY_NAME.get(_driver_name_key(_legacy_name))
+    if _canonical_id:
+        _DRIVER_ID_ALIASES[_legacy_id] = _canonical_id
+
+
+def canonical_driver_id(driver_id):
+    """Map legacy result-feed slugs to the replay bundle's per-session entrant IDs."""
+    if driver_id is None:
+        return None
+    value = str(driver_id)
+    return _DRIVER_ID_ALIASES.get(value, value)
 
 
 def _costs(total_millions):
@@ -53,6 +95,9 @@ for row in TEAM_LIST:
         "name": name,
         "historical_points": points,
         "historical_rank": rank,
+        # A conservative local board expectation used only for the financial audit.
+        # It is intentionally less ambitious than the recorded season for midfield teams.
+        "board_target_rank": 1 if rank == 1 else min(10, rank + 1),
         "base_delta": base_delta,
         "fixed_cost": fixed_cost * 1_000_000,
         "primary": primary,
@@ -66,7 +111,8 @@ for row in TEAM_LIST:
     }
 
 
-# date, venue, sprint, aero, power, chassis, baseline risk, historic weather.
+# Date, venue, Sprint flag, and track-planning characteristics.  Actual race-session
+# weather is loaded from historical_weekend_context_2025.json, not from this schedule.
 _ROUND_ROWS = [
     ("Australia", "Albert Park, Melbourne", "2025-03-16", False, .58, .56, .64, .12, "Rain showers", 18, 2.6, 27),
     ("China", "Shanghai International Circuit", "2025-03-23", True, .60, .61, .55, .08, "Dry", 21, .0, 16),
@@ -99,7 +145,10 @@ CALENDAR = [
         "round": index,
         "name": row[0], "venue": row[1], "date": row[2], "sprint": row[3],
         "aero": row[4], "powertrain": row[5], "chassis": row[6], "risk": row[7],
-        "weather": {"condition": row[8], "temperature_c": row[9], "rain_mm": row[10], "wind_kph": row[11]},
+        "weather": {
+            "condition": "See local historical race-session context.",
+            "temperature_c": None, "rain_mm": None, "wind_kph": None,
+        },
     }
     for index, row in enumerate(_ROUND_ROWS, start=1)
 ]
@@ -145,58 +194,203 @@ def historical_round_form(team_id, round_number):
     return max(-1.0, min(1.0, (points[round_number - 1] - average) / max(10.0, average)))
 
 
-def strategy_for(team_id, round_number):
-    """A compact local historical-strategy reference for the selected team's view."""
-    track = CALENDAR[round_number - 1]
-    wet = track["weather"]["rain_mm"] >= .5
-    compounds = "Intermediate → Intermediate" if wet else ("Medium → Hard" if round_number % 3 else "Soft → Hard → Medium")
-    first_stop = 18 + ((round_number * 3 + TEAMS[team_id]["historical_rank"]) % 12)
-    second_stop = first_stop + 18 if "→" in compounds and compounds.count("→") > 1 else None
-    stops = [first_stop] + ([second_stop] if second_stop else [])
+def weekend_context(round_number):
+    """Return locally bundled OpenF1/Open-Meteo context for one exact replay round."""
+    return WEEKEND_CONTEXT_2025.get("rounds", {}).get(str(int(round_number)), {})
+
+
+def _weather_summary(session_name, raw_weather, round_weather):
+    """Normalise a source record for display without estimating missing fields."""
+    raw_weather = raw_weather or {}
+    meteo = (round_weather or {}).get("open_meteo", {}) if session_name == "Grand Prix" else {}
+    wind = raw_weather.get("wind_speed_mps") or {}
     return {
-        "compounds": compounds,
-        "pit_laps": stops,
-        "note": "Local historical strategy reference. Team intent is only shown where explicitly published.",
+        "session": session_name,
+        "available": bool(raw_weather.get("available")),
+        "source_url": raw_weather.get("source_url"),
+        "sample_count": raw_weather.get("sample_count"),
+        "air_temperature_c": raw_weather.get("air_temperature_c"),
+        "track_temperature_c": raw_weather.get("track_temperature_c"),
+        "humidity_percent": raw_weather.get("humidity_percent"),
+        "wind_speed_kph": {
+            key: (value * 3.6 if value is not None else None)
+            for key, value in wind.items()
+        },
+        "rainfall_observed": raw_weather.get("rainfall_observed"),
+        "representative_samples": raw_weather.get("representative_samples", []),
+        "open_meteo": meteo,
     }
 
 
-def events_for(team_id, round_number):
-    """Local curated event prompts. Costs are gameplay estimates, not published team costs."""
-    events = []
-    team_name = TEAMS[team_id]["name"]
-    if round_number == 8:
-        events.append({
-            "kind": "wall_contact", "session": "Grand Prix", "title": "Monaco wall contact",
-            "amount": 2_200_000, "category": "Chassis / structures", "probability": .86,
-            "reason": "High-risk street-circuit wall contact", "responsible": "Not officially assigned",
-            "source": "Local historical-risk template", "penalty": .350,
-        })
-    if round_number == 12:
-        events.append({
-            "kind": "assembly_replacement", "session": "Grand Prix", "title": "Silverstone suspension / aero assembly",
-            "amount": 800_000, "category": "Chassis / structures", "probability": .66,
-            "reason": "High-speed gravel and kerb exposure", "responsible": "Not officially assigned",
-            "source": "Local historical-risk template", "penalty": .180,
-        })
-    for result in historical_round(team_id, round_number)["results"]:
-        if result["session"] not in {"Grand Prix", "Sprint"} or result["status"] in {"Finished", "Lapped"}:
+def historical_weather(round_number):
+    """Return actual local weather summaries for race and Sprint sessions when held."""
+    record = weekend_context(round_number)
+    round_weather = record.get("weather", {})
+    summaries = []
+    for session_name in ("Sprint", "Grand Prix"):
+        session = record.get("sessions", {}).get(session_name, {})
+        weather = session.get("weather")
+        if weather:
+            summaries.append(_weather_summary(session_name, weather, round_weather))
+    primary = next((item for item in summaries if item["session"] == "Grand Prix"), summaries[0] if summaries else None)
+    return {
+        "available": bool(primary),
+        "primary": primary,
+        "sessions": summaries,
+        "source_note": "OpenF1 race-session observations; Open-Meteo precipitation is a local weather-grid reanalysis estimate.",
+    }
+
+
+def strategy_for(team_id, round_number):
+    """Return actual source-backed selected-team stint and pit records, never estimates."""
+    record = weekend_context(round_number)
+    entries = []
+    for session_name in ("Sprint", "Grand Prix"):
+        session = record.get("sessions", {}).get(session_name, {})
+        drivers = []
+        for driver_id, driver in session.get("drivers", {}).items():
+            if driver.get("team_id") != team_id:
+                continue
+            drivers.append({
+                "driver_id": canonical_driver_id(driver_id),
+                "driver": driver.get("driver", driver_id.replace("_", " ").title()),
+                "stints": list(driver.get("stints") or []),
+                "pit_stops": list(driver.get("pit_stops") or []),
+                "stints_available": bool(driver.get("stints_available")),
+                "pit_stops_available": bool(driver.get("pit_stops_available")),
+            })
+        if session:
+            entries.append({
+                "session": session_name,
+                "available": bool(session.get("available")),
+                "source_url": session.get("source_url"),
+                "pit_source_url": session.get("pit_source_url"),
+                "drivers": drivers,
+            })
+    return {
+        "available": bool(entries),
+        "sessions": entries,
+        "note": "Actual OpenF1 tyre-stint and pit-lane records. Empty source-returned pit lists mean no stop was recorded; unavailable fields are not inferred.",
+    }
+
+
+# --- Exact historical replay helpers ---------------------------------------
+
+TEAM_NAME_TO_ID = {
+    "mclaren": "mclaren",
+    "mercedes": "mercedes",
+    "red bull racing": "red_bull",
+    "red bull": "red_bull",
+    "ferrari": "ferrari",
+    "williams": "williams",
+    "racing bulls": "racing_bulls",
+    "rb": "racing_bulls",
+    "aston martin": "aston_martin",
+    "aston martin aramco": "aston_martin",
+    "haas f1 team": "haas",
+    "haas": "haas",
+    "kick sauber": "sauber",
+    "stake f1 team kick sauber": "sauber",
+    "sauber": "sauber",
+    "alpine": "alpine",
+    "bwt alpine f1 team": "alpine",
+}
+
+
+def _round_record(round_number):
+    return REPLAY_2025.get("rounds", {}).get(str(round_number), {})
+
+
+def replay_available():
+    return bool(REPLAY_2025.get("rounds"))
+
+
+def replay_weekend(round_number):
+    """Return the immutable local result payload for one 2025 race weekend."""
+    record = _round_record(round_number)
+    if not record:
+        raise ValueError("The local exact-2025 replay data has not been installed yet.")
+    return record
+
+
+def replay_session_names(round_number):
+    record = replay_weekend(round_number)
+    sessions = record.get("sessions", {})
+    canonical = ["Sprint Qualifying", "Sprint", "Grand Prix Qualifying", "Qualifying", "Grand Prix"]
+    result = []
+    for name in canonical:
+        if name in sessions:
+            result.append(name)
+    return result
+
+
+def replay_rows(round_number, session_name):
+    session = replay_weekend(round_number).get("sessions", {}).get(session_name, {})
+    return session.get("rows", [])
+
+
+def driver_directory():
+    """A stable driver directory, including drivers who changed seats during 2025."""
+    directory = {
+        driver_id: {"id": driver_id, "name": details.get("name", driver_id.replace("_", " ").title())}
+        for driver_id, details in REPLAY_2025.get("drivers", {}).items()
+    }
+    for legacy_id, name in HISTORICAL_2025.get("drivers", {}).items():
+        canonical_id = canonical_driver_id(legacy_id)
+        directory.setdefault(canonical_id, {"id": canonical_id, "name": name})
+        directory[legacy_id] = directory[canonical_id]
+    for details in TEAMS.values():
+        for driver in details["drivers"]:
+            canonical_id = canonical_driver_id(driver["id"])
+            directory.setdefault(canonical_id, {"id": canonical_id, "name": driver["name"]})
+            directory[driver["id"]] = directory[canonical_id]
+    for round_data in REPLAY_2025.get("rounds", {}).values():
+        for session in round_data.get("sessions", {}).values():
+            for row in session.get("rows", []):
+                driver_id = row.get("driver_id")
+                if driver_id:
+                    directory.setdefault(driver_id, {"id": driver_id, "name": row.get("driver", driver_id.replace("_", " ").title())})
+    return directory
+
+
+def portrait_path(driver_id):
+    """Prefer a locally bundled photo, then fall back to the original SVG badge."""
+    driver_id = canonical_driver_id(driver_id)
+    photo_aliases = {
+        "alexander_albon": "alex_albon",
+        "andrea_kimi_antonelli": "kimi_antonelli",
+    }
+    photo_id = photo_aliases.get(driver_id, driver_id)
+    for extension in ("webp", "jpg", "jpeg", "png"):
+        candidate = ASSET_ROOT / "photos" / f"{photo_id}.{extension}"
+        if candidate.exists():
+            return candidate
+    return avatar_path(driver_id)
+
+
+def drivers_for_team_round(team_id, round_number):
+    """Return the actual race entrants for a constructor in a historical weekend."""
+    try:
+        weekend = replay_weekend(round_number)
+    except ValueError:
+        return TEAMS[team_id]["drivers"]
+    found = {}
+    for session in weekend.get("sessions", {}).values():
+        for row in session.get("rows", []):
+            row_team = row.get("team_id") or TEAM_NAME_TO_ID.get(str(row.get("team", "")).lower())
+            if row_team == team_id and row.get("driver_id"):
+                found[row["driver_id"]] = {"id": row["driver_id"], "name": row.get("driver", row["driver_id"].replace("_", " ").title())}
+    return list(found.values()) or TEAMS[team_id]["drivers"]
+
+
+def incidents_for(team_id, round_number):
+    """Return only sourced selected-team records for the given historical weekend."""
+    items = INCIDENTS_2025.get("incidents", INCIDENTS_2025 if isinstance(INCIDENTS_2025, list) else [])
+    results = []
+    for item in items:
+        if item.get("team_id") != team_id or int(item.get("round", 0)) != int(round_number):
             continue
-        events.append({
-            "kind": "historical_result_status", "session": result["session"],
-            "title": f"{result['driver']} {result['session']} status: {result['status']}",
-            "amount": 0, "category": "Other", "probability": 1.0,
-            "reason": f"Official archived session status: {result['status']}.",
-            "responsible": "Not officially assigned", "source": "Jolpica historical results archive",
-            "penalty": 0.0, "historical_only": True,
-        })
-    # A smaller team-specific local reference event to make the weekend history useful.
-    trigger = (TEAMS[team_id]["historical_rank"] * 3) % 19 + 2
-    if round_number == trigger and round_number not in (8, 12):
-        events.append({
-            "kind": "historical_reference", "session": "Grand Prix", "title": f"{team_name} weekend incident review",
-            "amount": 650_000 + TEAMS[team_id]["historical_rank"] * 75_000,
-            "category": "Operations", "probability": .58,
-            "reason": "Local curated 2025 weekend reference", "responsible": "Not officially assigned",
-            "source": "Local curated reference", "penalty": .120,
-        })
-    return events
+        result = dict(item)
+        result["driver_id"] = canonical_driver_id(result.get("driver_id"))
+        results.append(result)
+    return results

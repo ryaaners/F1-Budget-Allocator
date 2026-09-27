@@ -1,23 +1,35 @@
-"""Persistence and deterministic race engine for the offline season simulation."""
+"""Persistence and exact historical-replay logic for the offline 2025 F1 tool.
+
+On-track classifications are copied from the bundled 2025 result data.  Financial
+decisions remain interactive, but they never alter a replayed race result.
+"""
 from __future__ import annotations
 
 import json
-import math
-import random
 import sqlite3
 from datetime import date
+from statistics import median
 
-from career_data import CAP, CALENDAR, CATEGORIES, GP_POINTS, RETURN_SCALE, SPRINT_POINTS, TEAMS, events_for, historical_round, historical_round_form, strategy_for
+from career_data import (
+    CAP,
+    CALENDAR,
+    CATEGORIES,
+    TEAMS,
+    historical_weather,
+    incidents_for,
+    replay_available,
+    replay_session_names,
+    replay_weekend,
+    strategy_for,
+)
 
-CATEGORY_RATES = {
-    "Aero": .27, "Powertrain": .19, "Chassis / structures": .17,
-    "Personnel": .11, "Operations": .08, "Testing": .13, "Other": .04,
-}
 CURRENT_CAR_CATEGORIES = {"Aero", "Powertrain", "Chassis / structures", "Testing"}
+# Version 3 also rebuilds source-backed incident rows for older exact-replay saves.
+REPLAY_VERSION = 3
 
 
 def money(value):
-    return f"CAD ${value / 1_000_000:,.1f}M"
+    return f"CAD ${float(value) / 1_000_000:,.1f}M"
 
 
 def connect(path):
@@ -27,15 +39,26 @@ def connect(path):
     return con
 
 
+def _columns(con, table):
+    return {row[1] for row in con.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(con, table, name, definition):
+    if name not in _columns(con, table):
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 def migrate(con):
+    """Create the replay schema and non-destructively upgrade older local saves."""
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS career_state (
             id INTEGER PRIMARY KEY CHECK (id = 1), team_id TEXT NOT NULL,
             current_round INTEGER NOT NULL DEFAULT 1, session_index INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'active', theme TEXT NOT NULL DEFAULT 'team',
-            switch_round INTEGER NOT NULL DEFAULT 16, seed INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            switch_round INTEGER NOT NULL DEFAULT 16, seed INTEGER NOT NULL DEFAULT 2025,
+            created_at TEXT NOT NULL, crash_reserve_target REAL NOT NULL DEFAULT 0,
+            replay_version INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS career_allocations (
             category TEXT PRIMARY KEY, amount REAL NOT NULL, rate REAL NOT NULL
@@ -43,7 +66,8 @@ def migrate(con):
         CREATE TABLE IF NOT EXISTS career_ledger (
             id INTEGER PRIMARY KEY AUTOINCREMENT, round_number INTEGER, session_name TEXT,
             category TEXT NOT NULL, amount REAL NOT NULL, kind TEXT NOT NULL, note TEXT,
-            future_car INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            future_car INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+            effect TEXT NOT NULL DEFAULT '', counts_to_cap INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE IF NOT EXISTS career_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT, round_number INTEGER NOT NULL,
@@ -55,15 +79,40 @@ def migrate(con):
         );
         CREATE TABLE IF NOT EXISTS career_incidents (
             id INTEGER PRIMARY KEY AUTOINCREMENT, round_number INTEGER NOT NULL,
-            title TEXT NOT NULL, amount REAL NOT NULL, category TEXT NOT NULL,
+            title TEXT NOT NULL, amount REAL NOT NULL DEFAULT 0, category TEXT NOT NULL DEFAULT 'Other',
             penalty REAL NOT NULL DEFAULT 0, state TEXT NOT NULL DEFAULT 'pending',
-            reason TEXT, responsible TEXT, source TEXT, created_at TEXT NOT NULL
+            reason TEXT, responsible TEXT, source TEXT, created_at TEXT NOT NULL,
+            session_name TEXT, driver_id TEXT, kind TEXT, components TEXT,
+            cost_low REAL NOT NULL DEFAULT 0, cost_high REAL NOT NULL DEFAULT 0,
+            estimate_label TEXT, safety_critical INTEGER NOT NULL DEFAULT 0,
+            repair_required INTEGER NOT NULL DEFAULT 0, chosen_amount REAL NOT NULL DEFAULT 0,
+            source_url TEXT, reviewed_at TEXT
         );
         CREATE TABLE IF NOT EXISTS career_preferences (
             key TEXT PRIMARY KEY, value TEXT NOT NULL
         );
         """
     )
+    for table, name, definition in (
+        ("career_state", "crash_reserve_target", "REAL NOT NULL DEFAULT 0"),
+        ("career_state", "replay_version", "INTEGER NOT NULL DEFAULT 0"),
+        ("career_ledger", "effect", "TEXT NOT NULL DEFAULT ''"),
+        ("career_ledger", "counts_to_cap", "INTEGER NOT NULL DEFAULT 1"),
+        ("career_incidents", "session_name", "TEXT"),
+        ("career_incidents", "driver_id", "TEXT"),
+        ("career_incidents", "kind", "TEXT"),
+        ("career_incidents", "components", "TEXT"),
+        ("career_incidents", "cost_low", "REAL NOT NULL DEFAULT 0"),
+        ("career_incidents", "cost_high", "REAL NOT NULL DEFAULT 0"),
+        ("career_incidents", "estimate_label", "TEXT"),
+        ("career_incidents", "safety_critical", "INTEGER NOT NULL DEFAULT 0"),
+        ("career_incidents", "repair_required", "INTEGER NOT NULL DEFAULT 0"),
+        ("career_incidents", "chosen_amount", "REAL NOT NULL DEFAULT 0"),
+        ("career_incidents", "source_url", "TEXT"),
+        ("career_incidents", "reviewed_at", "TEXT"),
+    ):
+        _add_column(con, table, name, definition)
+    _backfill_ledger_effects(con)
     con.commit()
 
 
@@ -73,366 +122,360 @@ def active_state(con):
 
 
 def reset_career(con):
-    for table in ("career_state", "career_allocations", "career_ledger", "career_sessions", "career_standings", "career_incidents", "career_preferences"):
+    for table in (
+        "career_state", "career_allocations", "career_ledger", "career_sessions",
+        "career_standings", "career_incidents", "career_preferences",
+    ):
         con.execute(f"DELETE FROM {table}")
     con.commit()
 
 
-def create_career(con, team_id, allocations, switch_round=16, theme="team", seed=2025):
+def _insert_ledger(con, round_number, session_name, category, amount, kind, note, effect, future_car=0, counts_to_cap=True):
+    con.execute(
+        """INSERT INTO career_ledger
+        (round_number, session_name, category, amount, kind, note, future_car, created_at, effect, counts_to_cap)
+        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            round_number, session_name, category, float(amount), kind, note, int(future_car),
+            date.today().isoformat(), effect, int(counts_to_cap),
+        ),
+    )
+
+
+def _investment_effect(category, future_car):
+    target = "future-car funding" if future_car else "2025 budget commitment"
+    safety = {
+        "Personnel": "Safety/readiness: staffing and response capacity recorded.",
+        "Operations": "Safety/readiness: operational resilience recorded.",
+        "Testing": "Safety/readiness: component validation coverage recorded.",
+        "Chassis / structures": "Safety/readiness: structural spare readiness recorded.",
+    }.get(category, "Safety/readiness: no direct safety allocation.")
+    return f"{target}; {safety} Historical replay results are unchanged."
+
+
+def _backfill_ledger_effects(con):
+    """Give legacy financial choices the same explicit Effects descriptions as new rows."""
+    if "effect" not in _columns(con, "career_ledger"):
+        return
+    rows = con.execute(
+        "SELECT id, category, amount, kind, future_car, effect FROM career_ledger WHERE COALESCE(effect, '') = ''"
+    ).fetchall()
+    for row in rows:
+        item = dict(row)
+        kind = item["kind"]
+        if kind in {"preseason_rnd", "upgrade"}:
+            effect = _investment_effect(item["category"], bool(item["future_car"]))
+        elif kind == "operating_base":
+            effect = "Cap spend: modelled fixed operating base; historical replay results are unchanged."
+        elif kind == "crash_reserve_allocation":
+            effect = f"Crash contingency: {money(item['amount'])} reserved for source-backed repairs."
+        elif kind.startswith("repair"):
+            effect = "Safety/readiness: repair decision recorded; historical replay results are unchanged."
+        else:
+            effect = "Legacy financial entry retained; historical replay results are unchanged."
+        con.execute("UPDATE career_ledger SET effect = ? WHERE id = ?", (effect, item["id"]))
+
+
+def create_career(con, team_id, allocations, crash_reserve_target=5_000_000, switch_round=16, theme="team", seed=2025):
     if team_id not in TEAMS:
         raise ValueError("Choose a valid 2025 constructor.")
-    team = TEAMS[team_id]
-    clean = {category: max(0.0, float(allocations.get(category, 0))) for category in CATEGORIES}
-    planned = sum(clean.values()) + team["fixed_cost"]
-    if planned > CAP:
-        raise ValueError("Pre-season allocation exceeds the CAD $215M simulation cap.")
     reset_career(con)
+    clean = {category: max(0.0, float(allocations.get(category, 0))) for category in CATEGORIES}
+    team = TEAMS[team_id]
     con.execute(
-        "INSERT INTO career_state VALUES (1,?,?,?,?,?,?,?,?)",
-        (team_id, 1, 0, "active", theme, int(switch_round), int(seed), date.today().isoformat()),
+        """INSERT INTO career_state
+        (id,team_id,current_round,session_index,status,theme,switch_round,seed,created_at,crash_reserve_target,replay_version)
+        VALUES (1,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            team_id, 1, 0, "active", theme, int(switch_round), int(seed), date.today().isoformat(),
+            max(0.0, float(crash_reserve_target)), REPLAY_VERSION,
+        ),
     )
     con.executemany(
         "INSERT INTO career_allocations(category, amount, rate) VALUES (?,?,?)",
-        [(category, clean[category], CATEGORY_RATES[category]) for category in CATEGORIES],
+        [(category, clean[category], 0.0) for category in CATEGORIES],
     )
-    con.execute(
-        "INSERT INTO career_ledger(round_number, session_name, category, amount, kind, note, future_car, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (0, "Pre-season", "Operations", team["fixed_cost"], "operating_base", "Modelled fixed 2025 operating base", 0, date.today().isoformat()),
+    _insert_ledger(
+        con, 0, "Pre-season", "Operations", team["fixed_cost"], "operating_base",
+        "Modelled fixed 2025 operating base", "Cap spend: fixed operating base.", counts_to_cap=True,
     )
     for category, amount in clean.items():
         if amount:
-            con.execute(
-                "INSERT INTO career_ledger(round_number, session_name, category, amount, kind, note, future_car, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                (0, "Pre-season", category, amount, "preseason_rnd", "Pre-season allocation", 0, date.today().isoformat()),
+            _insert_ledger(
+                con, 0, "Pre-season", category, amount, "preseason_rnd",
+                "Pre-season allocation", _investment_effect(category, False), counts_to_cap=True,
             )
-    con.executemany("INSERT INTO career_standings(team_id, points) VALUES (?, 0)", [(team_key,) for team_key in TEAMS])
+    _insert_ledger(
+        con, 0, "Pre-season", "Other", max(0.0, float(crash_reserve_target)),
+        "crash_reserve_allocation", "Dedicated crash contingency allocation",
+        f"Crash contingency: {money(crash_reserve_target)} reserved for source-backed repairs.",
+        counts_to_cap=False,
+    )
+    _initialize_standings(con)
     con.commit()
-    return active_state(con)
+
+
+def _initialize_standings(con):
+    for team_id in TEAMS:
+        con.execute("INSERT OR IGNORE INTO career_standings(team_id, points) VALUES (?,0)", (team_id,))
+
+
+def total_spend(con):
+    return float(con.execute("SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE counts_to_cap = 1").fetchone()[0])
+
+
+def ledger(con):
+    items = [dict(row) for row in con.execute("SELECT * FROM career_ledger ORDER BY id DESC").fetchall()]
+    for item in items:
+        if not item.get("effect"):
+            item["effect"] = "Legacy entry retained during historical replay migration."
+    return items
+
+
+def spend_by_category(con):
+    output = {category: 0.0 for category in CATEGORIES}
+    for row in con.execute(
+        "SELECT category, COALESCE(SUM(amount),0) amount FROM career_ledger WHERE counts_to_cap = 1 GROUP BY category"
+    ):
+        if row["category"] in output:
+            output[row["category"]] = float(row["amount"])
+    return output
+
+
+def sanction_for(spend):
+    breach = max(0.0, float(spend) - CAP)
+    breach_pct = breach / CAP if CAP else 0.0
+    if breach <= 0:
+        return {
+            "label": "Within gameplay cap", "breach": 0.0, "breach_pct": 0.0,
+            "fine": 0.0, "wind_tunnel_cut": 0, "point_deduction": 0,
+        }
+    if breach_pct <= 0.05:
+        return {
+            "label": "Minor gameplay breach", "breach": breach, "breach_pct": breach_pct,
+            "fine": 5_000_000.0, "wind_tunnel_cut": 10, "point_deduction": 0,
+        }
+    return {
+        "label": "Major gameplay breach", "breach": breach, "breach_pct": breach_pct,
+        "fine": 10_000_000.0, "wind_tunnel_cut": 20, "point_deduction": 10,
+    }
+
+
+def breach_preview(con, extra_spend=0.0):
+    spend = total_spend(con) + max(0.0, float(extra_spend))
+    reserve = crash_contingency(con)
+    sanction = sanction_for(spend)
+    remaining = CAP - spend
+    discretionary_remaining = remaining - reserve["remaining"]
+    return {
+        "spend": spend, "remaining": remaining, "over_cap": max(0.0, spend - CAP),
+        "reserve_remaining": reserve["remaining"],
+        "discretionary_remaining": discretionary_remaining,
+        "contingency_at_risk": max(0.0, -discretionary_remaining),
+        "sanction": sanction,
+    }
+
+
+def crash_contingency(con):
+    state = active_state(con)
+    if not state:
+        return {"target": 0.0, "used": 0.0, "remaining": 0.0, "uncovered": 0.0}
+    used = float(con.execute(
+        """SELECT COALESCE(SUM(amount),0) FROM career_ledger
+        WHERE kind IN ('repair_full','repair_minimum','repair_custom','repair_manual','repair')"""
+    ).fetchone()[0])
+    target = max(0.0, float(state.get("crash_reserve_target", 0)))
+    return {
+        "target": target, "used": used, "remaining": max(0.0, target - used),
+        "uncovered": max(0.0, used - target),
+    }
+
+
+def set_crash_reserve(con, target):
+    state = active_state(con)
+    if not state:
+        raise ValueError("Start a simulation before setting a crash contingency.")
+    target = max(0.0, float(target))
+    con.execute("UPDATE career_state SET crash_reserve_target = ? WHERE id = 1", (target,))
+    existing = con.execute(
+        "SELECT id FROM career_ledger WHERE kind = 'crash_reserve_allocation' ORDER BY id LIMIT 1"
+    ).fetchone()
+    effect = f"Crash contingency: {money(target)} reserved for source-backed repairs."
+    if existing:
+        con.execute(
+            "UPDATE career_ledger SET amount = ?, note = ?, effect = ? WHERE id = ?",
+            (target, "Dedicated crash contingency allocation", effect, existing["id"]),
+        )
+    else:
+        _insert_ledger(con, 0, "Pre-season", "Other", target, "crash_reserve_allocation", "Dedicated crash contingency allocation", effect, counts_to_cap=False)
+    con.commit()
+
+
+def commit_investment(con, category, amount, note="Race-weekend package"):
+    """Record a budget decision without blocking it at the gameplay cap."""
+    state = active_state(con)
+    if not state or state["status"] != "active":
+        raise ValueError("Start a simulation before committing an upgrade.")
+    if category not in CATEGORIES or float(amount) <= 0:
+        raise ValueError("Choose a category and a positive CAD amount.")
+    future = int(state["current_round"] > state["switch_round"] and category in CURRENT_CAR_CATEGORIES)
+    target = "future car" if future else "2025 budget"
+    _insert_ledger(
+        con, state["current_round"], "Pre-race", category, amount, "upgrade",
+        f"{note} — {target}", _investment_effect(category, future), future_car=future,
+    )
+    con.commit()
+    return bool(future)
 
 
 def ordered_sessions(round_number):
-    return ["Sprint Qualifying", "Sprint", "Grand Prix Qualifying", "Grand Prix"] if CALENDAR[round_number - 1]["sprint"] else ["Qualifying", "Grand Prix"]
+    if replay_available():
+        return replay_session_names(round_number)
+    return ["Sprint Qualifying", "Sprint", "Qualifying", "Grand Prix"] if CALENDAR[round_number - 1]["sprint"] else ["Qualifying", "Grand Prix"]
 
 
 def next_session(con):
     state = active_state(con)
     if not state or state["status"] != "active":
         return None
-    sessions = ordered_sessions(state["current_round"])
-    return sessions[state["session_index"]] if state["session_index"] < len(sessions) else None
+    return f"Advance {CALENDAR[state['current_round'] - 1]['name']} weekend"
 
 
-def ledger(con):
-    return [dict(row) for row in con.execute("SELECT * FROM career_ledger ORDER BY id DESC").fetchall()]
+def _int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
-def total_spend(con):
-    return float(con.execute("SELECT COALESCE(SUM(amount), 0) FROM career_ledger").fetchone()[0])
-
-
-def spend_by_category(con):
-    output = {category: 0.0 for category in CATEGORIES}
-    for row in con.execute("SELECT category, COALESCE(SUM(amount), 0) amount FROM career_ledger GROUP BY category"):
-        output[row["category"]] = float(row["amount"])
-    return output
-
-
-def _rd_spend(con, future_car=False):
-    data = {category: 0.0 for category in CATEGORIES}
-    for row in con.execute("SELECT category, COALESCE(SUM(amount), 0) amount FROM career_ledger WHERE future_car = ? GROUP BY category", (int(future_car),)):
-        data[row["category"]] = max(0.0, float(row["amount"]))
-    return data
-
-
-def lap_gain(rate, spend):
-    return rate * (1 - math.exp(-max(0.0, spend) / RETURN_SCALE))
-
-
-def current_performance(con, round_number):
-    values = _rd_spend(con, future_car=False)
-    track = CALENDAR[round_number - 1]
-    category_gains = {category: lap_gain(CATEGORY_RATES[category], values[category]) for category in CATEGORIES}
-    track_gain = (
-        category_gains["Aero"] * track["aero"] +
-        category_gains["Powertrain"] * track["powertrain"] +
-        category_gains["Chassis / structures"] * track["chassis"] +
-        category_gains["Testing"] * .20 + category_gains["Other"] * .05
-    )
-    personnel = min(.10, category_gains["Personnel"] * .45)
-    operations = min(.06, category_gains["Operations"] * .35)
-    pending_penalty = float(con.execute("SELECT COALESCE(SUM(penalty),0) FROM career_incidents WHERE state = 'deferred'").fetchone()[0])
-    return {
-        "track_gain": track_gain, "personnel": personnel, "operations": operations,
-        "damage_penalty": pending_penalty, "category_gains": category_gains,
-    }
-
-
-def development_outlook(con):
-    """Give the active dashboard a bounded current-car versus next-car forecast."""
-    state = active_state(con)
-    if not state:
-        return None
-    round_number = min(max(1, state["current_round"]), len(CALENDAR))
-    details = TEAMS[state["team_id"]]
-    current = current_performance(con, round_number)
-    future = _rd_spend(con, future_car=True)
-    future_gain = (
-        lap_gain(CATEGORY_RATES["Aero"], future["Aero"]) * .62
-        + lap_gain(CATEGORY_RATES["Powertrain"], future["Powertrain"]) * .42
-        + lap_gain(CATEGORY_RATES["Chassis / structures"], future["Chassis / structures"]) * .48
-        + lap_gain(CATEGORY_RATES["Testing"], future["Testing"]) * .28
-    )
-    reserve_draw = float(con.execute(
-        "SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE kind = 'repair_future_reserve'"
-    ).fetchone()[0])
-    future_gain = max(0.0, future_gain - min(.08, reserve_draw / 120_000_000))
-    current_credit = max(0.0, current["track_gain"] + current["personnel"] + current["operations"] - current["damage_penalty"])
-    projected_position = max(1, min(10, details["historical_rank"] - int(round(current_credit / .14))))
-    return {
-        "projected_position": projected_position,
-        "current_credit": current_credit,
-        "future_credit": future_gain,
-        "switch_round": state["switch_round"],
-        "reserve_draw": reserve_draw,
-    }
-
-
-def commit_investment(con, category, amount, note="Race-weekend package"):
-    state = active_state(con)
-    if not state or state["status"] != "active":
-        raise ValueError("Start a simulation before committing an upgrade.")
-    amount = float(amount)
-    if category not in CATEGORIES or amount <= 0:
-        raise ValueError("Choose a category and a positive CAD amount.")
-    if total_spend(con) + amount > CAP:
-        raise ValueError("This package would exceed the CAD $215M simulation cap.")
-    future = int(state["current_round"] >= state["switch_round"] and category in CURRENT_CAR_CATEGORIES)
-    target = "future car" if future else "current car"
-    con.execute(
-        "INSERT INTO career_ledger(round_number, session_name, category, amount, kind, note, future_car, created_at) VALUES (?,?,?,?,?,?,?,?)",
-        (state["current_round"], "Pre-race", category, amount, "upgrade", f"{note} — {target}", future, date.today().isoformat()),
-    )
-    con.commit()
-    return future
-
-
-def add_manual_incident(con, title, amount, category, penalty=.15, reason="Manual ledger event"):
-    state = active_state(con)
-    if not state:
-        raise ValueError("Start a simulation before adding a career incident.")
-    con.execute(
-        "INSERT INTO career_incidents(round_number,title,amount,category,penalty,state,reason,responsible,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-        (state["current_round"], title, float(amount), category, float(penalty), "pending", reason, "Manual selection", "Spend Ledger", date.today().isoformat()),
-    )
-    con.commit()
-
-
-def pending_incidents(con):
-    return [dict(row) for row in con.execute("SELECT * FROM career_incidents WHERE state = 'pending' OR state = 'deferred' ORDER BY round_number, id").fetchall()]
-
-
-def resolve_incident(con, incident_id, choice):
-    incident = con.execute("SELECT * FROM career_incidents WHERE id = ?", (incident_id,)).fetchone()
-    if not incident or incident["state"] not in {"pending", "deferred"}:
-        return
-    state = active_state(con)
-    if choice == "defer":
-        con.execute("UPDATE career_incidents SET state = 'deferred' WHERE id = ?", (incident_id,))
-    else:
-        if choice not in {"fund", "cancel_upgrade", "future_reserve", "breach"}:
-            raise ValueError("Choose a valid repair funding option.")
-        if choice == "cancel_upgrade":
-            upgrades = [dict(row) for row in con.execute(
-                "SELECT * FROM career_ledger WHERE kind = 'upgrade' AND future_car = 0 AND amount > 0 ORDER BY id DESC"
-            )]
-            available = sum(row["amount"] for row in upgrades)
-            if not upgrades:
-                raise ValueError("There is no current-car upgrade available to cancel or reduce.")
-            if total_spend(con) - available + incident["amount"] > CAP:
-                raise ValueError("Cancelling current upgrades still cannot fund this repair inside the CAD $215M cap.")
-            remaining_to_redirect = incident["amount"]
-            for upgrade in upgrades:
-                if remaining_to_redirect <= 0:
-                    break
-                redirected = min(upgrade["amount"], remaining_to_redirect)
-                con.execute(
-                    "INSERT INTO career_ledger(round_number, session_name, category, amount, kind, note, future_car, created_at) VALUES (?,?,?,?,?,?,?,?)",
-                    (
-                        state["current_round"], "Repair decision", upgrade["category"], -redirected,
-                        "upgrade_reallocation", f"Reduced {upgrade['note']} to fund {incident['title']}", 0,
-                        date.today().isoformat(),
-                    ),
-                )
-                remaining_to_redirect -= redirected
-        if choice != "breach" and total_spend(con) + incident["amount"] > CAP:
-            raise ValueError("Repair cannot be funded inside the CAD $215M cap. Defer it or free budget first.")
-        if choice == "future_reserve":
-            kind, note = "repair_future_reserve", "Repair funded by drawing from future-car reserve"
-        elif choice == "breach":
-            kind, note = "repair_breach", "Board-approved emergency repair that exceeds the gameplay cap"
-        else:
-            kind, note = "repair", "Repair funded from cap headroom"
-        con.execute(
-            "INSERT INTO career_ledger(round_number, session_name, category, amount, kind, note, future_car, created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (state["current_round"], "Repair decision", incident["category"], incident["amount"], kind, note, 0, date.today().isoformat()),
-        )
-        con.execute("UPDATE career_incidents SET state = 'funded', penalty = 0 WHERE id = ?", (incident_id,))
-    con.commit()
-
-
-def _rng(state, label):
-    return random.Random(f"{state['seed']}:{label}")
-
-
-def _simulate_classification(con, state, round_number, session_name):
-    track = CALENDAR[round_number - 1]
-    user_team = state["team_id"]
-    perf = current_performance(con, round_number)
-    rng = _rng(state, f"{round_number}:{session_name}")
-    rows = []
-    for team_id, details in TEAMS.items():
-        historic_wave = math.sin((round_number + details["historical_rank"]) * .71) * .025 - historical_round_form(team_id, round_number) * .15
-        for driver_index, driver in enumerate(details["drivers"]):
-            driver_gap = (100 - driver["skill"]) * .012 + driver_index * .008
-            score = details["base_delta"] + historic_wave + driver_gap + rng.gauss(0, .035)
-            if team_id == user_team:
-                rain_factor = .025 if track["weather"]["rain_mm"] >= .5 else 0
-                score -= perf["track_gain"] + perf["personnel"] + perf["operations"] - rain_factor
-                score += perf["damage_penalty"]
-            rows.append({"team_id": team_id, "team": details["name"], "driver_id": driver["id"], "driver": driver["name"], "score": score})
-    rows.sort(key=lambda row: row["score"])
-    result = []
-    base_time = 80.0 if "Qualifying" in session_name else 90.0
-    for position, row in enumerate(rows, start=1):
-        result.append({
-            **row, "position": position, "gap": round(max(0, row["score"] - rows[0]["score"]), 3),
-            "time": round(base_time + row["score"], 3),
-        })
+def _normalise_row(row):
+    result = dict(row)
+    result["points"] = _int(result.get("points"), 0)
+    result["position"] = result.get("position") or result.get("position_display") or ""
+    result.setdefault("position_display", str(result["position"]))
+    result.setdefault("gap_display", result.get("gap") or result.get("time_display") or result.get("status") or "")
+    result.setdefault("time_display", result.get("status") or "")
+    result.setdefault("status", result.get("time_display") or "")
     return result
 
 
-def _rescore_knockout(rows, rng, base_time):
-    """Run one knockout stage from the entrants who survived the prior stage."""
-    stage = []
-    for row in rows:
-        refreshed = dict(row)
-        refreshed["score"] = row["score"] + rng.gauss(0, .018)
-        stage.append(refreshed)
-    stage.sort(key=lambda row: row["score"])
-    winner = stage[0]["score"]
-    for position, row in enumerate(stage, start=1):
-        row["position"] = position
-        row["gap"] = round(max(0, row["score"] - winner), 3)
-        row["time"] = round(base_time + row["score"], 3)
-        row["points"] = 0
-    return stage
+def _store_weekend_sessions(con, state, round_number):
+    weekend = replay_weekend(round_number)
+    sessions = weekend.get("sessions", {})
+    for session_name in replay_session_names(round_number):
+        session = sessions.get(session_name, {})
+        rows = [_normalise_row(row) for row in session.get("rows", [])]
+        payload = {
+            "results": rows,
+            "notes": session.get("notes", []),
+            "source": session.get("source_url") or session.get("source") or weekend.get("source_url") or weekend.get("source") or "Local 2025 historical replay bundle",
+        }
+        con.execute(
+            """INSERT OR REPLACE INTO career_sessions(round_number, session_name, results_json, created_at)
+            VALUES (?,?,?,?)""",
+            (round_number, session_name, json.dumps(payload), date.today().isoformat()),
+        )
+        if session_name in {"Sprint", "Grand Prix"}:
+            for row in rows:
+                team_id = row.get("team_id")
+                points = _int(row.get("points"), 0)
+                if team_id in TEAMS and points:
+                    con.execute("UPDATE career_standings SET points = points + ? WHERE team_id = ?", (points, team_id))
 
 
-def _simulate_knockout(con, state, round_number, session_name):
-    """Simulate Q1/Q2/Q3 or SQ1/SQ2/SQ3 for the complete 20-car grid."""
-    is_sprint = session_name == "Sprint Qualifying"
-    prefix = "SQ" if is_sprint else "Q"
-    base_time = 79.5 if is_sprint else 80.0
-    rng = _rng(state, f"{round_number}:{session_name}:knockout")
-    q1 = _simulate_classification(con, state, round_number, f"{session_name} {prefix}1")
-    q1 = _rescore_knockout(q1, rng, base_time)
-    q2 = _rescore_knockout(q1[:15], rng, base_time)
-    q3 = _rescore_knockout(q2[:10], rng, base_time)
-    final = q3 + q2[10:] + q1[15:]
-    winner = final[0]["score"]
-    for position, row in enumerate(final, start=1):
-        row["position"] = position
-        row["gap"] = round(max(0, row["score"] - winner), 3)
-        row["time"] = round(base_time + row["score"], 3)
-        row["points"] = 0
-    return final, [
-        {"name": f"{prefix}1", "results": q1},
-        {"name": f"{prefix}2", "results": q2},
-        {"name": f"{prefix}3", "results": q3},
-    ]
+def _category_for_incident(event):
+    components = " ".join(event.get("components") or []).lower()
+    if any(word in components for word in ("floor", "wing", "suspension", "chassis", "bodywork", "sidepod", "gearbox")):
+        return "Chassis / structures"
+    return "Other"
 
 
-def _insert_incidents_for_round(con, state, round_number):
-    values = _rd_spend(con)
-    mitigation = min(.14, (values["Personnel"] + values["Operations"] + values["Testing"]) / 150_000_000)
-    rng = _rng(state, f"incident:{round_number}")
-    for event in events_for(state["team_id"], round_number):
-        if event.get("historical_only"):
-            continue
-        exists = con.execute("SELECT 1 FROM career_incidents WHERE round_number = ? AND title = ?", (round_number, event["title"])).fetchone()
+def _record_historical_incidents(con, state, round_number):
+    for event in incidents_for(state["team_id"], round_number):
+        title = event.get("title") or f"{event.get('driver', 'Team')} weekend review"
+        exists = con.execute(
+            "SELECT 1 FROM career_incidents WHERE round_number = ? AND title = ?", (round_number, title)
+        ).fetchone()
         if exists:
             continue
-        probability = max(.05, event["probability"] - mitigation)
-        if rng.random() < probability:
-            con.execute(
-                "INSERT INTO career_incidents(round_number,title,amount,category,penalty,state,reason,responsible,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (round_number, event["title"], event["amount"], event["category"], event["penalty"], "pending", event["reason"], event["responsible"], event["source"], date.today().isoformat()),
-            )
-    track = CALENDAR[round_number - 1]
-    variance_title = f"{track['name']} component exposure review"
-    exists = con.execute("SELECT 1 FROM career_incidents WHERE round_number = ? AND title = ?", (round_number, variance_title)).fetchone()
-    weather_risk = min(.08, track["weather"]["rain_mm"] * .025)
-    probability = max(.02, .08 + track["risk"] * .35 + weather_risk - mitigation)
-    if not exists and rng.random() < probability:
-        amount = round(500_000 + track["risk"] * 1_500_000 + track["weather"]["rain_mm"] * 100_000, -3)
+        low = max(0.0, float(event.get("cost_low_cad", 0) or 0))
+        high = max(low, float(event.get("cost_high_cad", low) or low))
         con.execute(
-            "INSERT INTO career_incidents(round_number,title,amount,category,penalty,state,reason,responsible,source,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            """INSERT INTO career_incidents
+            (round_number,title,amount,category,penalty,state,reason,responsible,source,created_at,
+             session_name,driver_id,kind,components,cost_low,cost_high,estimate_label,safety_critical,
+             repair_required,chosen_amount,source_url)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                round_number, variance_title, amount, "Chassis / structures", .10, "pending",
-                "Modelled reliability, kerb, weather, and traffic exposure at this circuit.",
-                "Not officially assigned", "Simulation variance", date.today().isoformat(),
+                round_number, title, low, _category_for_incident(event), 0.0, "pending",
+                event.get("reason", "Official result status recorded."),
+                event.get("responsible", "Not officially assigned"),
+                event.get("source", "Historical 2025 incident bundle"), date.today().isoformat(),
+                event.get("session", "Grand Prix"), event.get("driver_id"), event.get("kind", "incident"),
+                ", ".join(event.get("components") or ["Damage components not publicly confirmed"]),
+                low, high, event.get("estimate_label", "No repair cost established"),
+                int(bool(event.get("safety_critical", False))), int(bool(event.get("repair_required", False))),
+                0.0, event.get("source_url", event.get("source", "")),
             ),
         )
 
 
-def simulate_next_session(con):
+def rebase_active_replay(con):
+    """Move a legacy active save to exact historical results without losing finance rows."""
+    state = active_state(con)
+    if not state or int(state.get("replay_version", 0)) >= REPLAY_VERSION or not replay_available():
+        return False
+    completed = max(0, min(len(CALENDAR), int(state["current_round"]) - 1))
+    con.execute("DELETE FROM career_sessions")
+    con.execute("DELETE FROM career_standings")
+    # Synthetic incidents cannot be reconciled with source-backed history.
+    con.execute("DELETE FROM career_incidents")
+    _initialize_standings(con)
+    for round_number in range(1, completed + 1):
+        _store_weekend_sessions(con, state, round_number)
+        _record_historical_incidents(con, state, round_number)
+    reserve = float(state.get("crash_reserve_target", 0) or 0)
+    if reserve <= 0:
+        reserve = min(5_000_000.0, max(0.0, CAP - total_spend(con)))
+    con.execute(
+        "UPDATE career_state SET session_index = 0, replay_version = ?, crash_reserve_target = ? WHERE id = 1",
+        (REPLAY_VERSION, reserve),
+    )
+    row = con.execute("SELECT id FROM career_ledger WHERE kind = 'crash_reserve_allocation' LIMIT 1").fetchone()
+    effect = f"Crash contingency: {money(reserve)} reserved for source-backed repairs."
+    if row:
+        con.execute("UPDATE career_ledger SET amount = ?, note = ?, effect = ?, counts_to_cap = 0 WHERE id = ?", (reserve, "Dedicated crash contingency allocation", effect, row["id"]))
+    else:
+        _insert_ledger(con, 0, "Pre-season", "Other", reserve, "crash_reserve_allocation", "Dedicated crash contingency allocation", effect, counts_to_cap=False)
+    con.commit()
+    return True
+
+
+def run_weekend(con):
+    """Persist every official session from the current weekend in one action."""
     state = active_state(con)
     if not state or state["status"] != "active":
-        raise ValueError("No active simulation session is available.")
-    round_number = state["current_round"]
-    session_name = next_session(con)
-    if not session_name:
-        raise ValueError("No session is available.")
-    knockout_stages = None
-    if session_name in {"Qualifying", "Sprint Qualifying"}:
-        results, knockout_stages = _simulate_knockout(con, state, round_number, session_name)
+        raise ValueError("No active 2025 replay is available.")
+    if not replay_available():
+        raise ValueError("The local exact-2025 replay data is unavailable.")
+    round_number = int(state["current_round"])
+    overdue_critical = con.execute(
+        """SELECT title FROM career_incidents
+        WHERE safety_critical = 1 AND state IN ('pending', 'deferred') AND round_number < ?
+        ORDER BY round_number, id""",
+        (round_number,),
+    ).fetchall()
+    if overdue_critical:
+        names = ", ".join(row["title"] for row in overdue_critical)
+        raise ValueError(f"Record the minimum safe repair before advancing: {names}.")
+    _store_weekend_sessions(con, state, round_number)
+    _record_historical_incidents(con, state, round_number)
+    if round_number >= len(CALENDAR):
+        con.execute("UPDATE career_state SET current_round = ?, session_index = 0, status = 'complete', replay_version = ? WHERE id = 1", (round_number, REPLAY_VERSION))
     else:
-        results = _simulate_classification(con, state, round_number, session_name)
-    points_map = SPRINT_POINTS if session_name == "Sprint" else (GP_POINTS if session_name == "Grand Prix" else [])
-    for row in results:
-        row["points"] = points_map[row["position"] - 1] if row["position"] <= len(points_map) else 0
-        if row["points"]:
-            con.execute("UPDATE career_standings SET points = points + ? WHERE team_id = ?", (row["points"], row["team_id"]))
-    if session_name == "Grand Prix":
-        fastest = min(results, key=lambda item: item["time"])
-        for row in results:
-            row["fastest_lap"] = row["driver_id"] == fastest["driver_id"]
-        _insert_incidents_for_round(con, state, round_number)
-    payload = {"results": results, "stages": knockout_stages} if knockout_stages else results
-    con.execute(
-        "INSERT INTO career_sessions(round_number,session_name,results_json,created_at) VALUES (?,?,?,?)",
-        (round_number, session_name, json.dumps(payload), date.today().isoformat()),
-    )
-    sessions = ordered_sessions(round_number)
-    if state["session_index"] + 1 >= len(sessions):
-        if round_number >= len(CALENDAR):
-            con.execute("UPDATE career_state SET session_index = 0, status = 'complete' WHERE id = 1")
-        else:
-            con.execute("UPDATE career_state SET current_round = ?, session_index = 0 WHERE id = 1", (round_number + 1,))
-    else:
-        con.execute("UPDATE career_state SET session_index = session_index + 1 WHERE id = 1")
+        con.execute("UPDATE career_state SET current_round = ?, session_index = 0, replay_version = ? WHERE id = 1", (round_number + 1, REPLAY_VERSION))
     con.commit()
-    return {"round": round_number, "session": session_name, "results": results}
-
-
-def standings(con):
-    rows = []
-    for row in con.execute("SELECT team_id, points FROM career_standings ORDER BY points DESC, team_id"):
-        team = TEAMS[row["team_id"]]
-        rows.append({"Team": team["name"], "team_id": row["team_id"], "Points": row["points"], "Historical 2025 points": team["historical_points"]})
-    for position, row in enumerate(rows, start=1):
-        row["Position"] = position
-    return rows
+    return {"round": round_number, "sessions": session_results(con, round_number)}
 
 
 def session_results(con, round_number=None):
@@ -441,47 +484,172 @@ def session_results(con, round_number=None):
     if round_number is not None:
         query += " WHERE round_number = ?"
         params = (round_number,)
-    query += " ORDER BY round_number DESC, id DESC"
+    query += " ORDER BY round_number DESC, id ASC"
     records = []
     for row in con.execute(query, params):
         item = dict(row)
         payload = json.loads(item.pop("results_json"))
-        if isinstance(payload, dict):
-            item["results"] = payload["results"]
-            item["stages"] = payload.get("stages") or []
-        else:
-            item["results"] = payload
-            item["stages"] = []
+        item["results"] = payload.get("results", payload if isinstance(payload, list) else [])
+        item["notes"] = payload.get("notes", []) if isinstance(payload, dict) else []
+        item["source"] = payload.get("source", "Local 2025 historical replay bundle") if isinstance(payload, dict) else "Local 2025 historical replay bundle"
         records.append(item)
     return records
+
+
+def last_completed_round(con):
+    row = con.execute("SELECT MAX(round_number) AS round_number FROM career_sessions").fetchone()
+    return int(row["round_number"]) if row and row["round_number"] is not None else None
+
+
+def standings(con):
+    rows = []
+    for row in con.execute("SELECT team_id, points FROM career_standings"):
+        if row["team_id"] not in TEAMS:
+            continue
+        team = TEAMS[row["team_id"]]
+        rows.append({
+            "Team": team["name"], "team_id": row["team_id"], "Points": int(row["points"]),
+            "Historical 2025 points": team["historical_points"],
+        })
+    rows.sort(key=lambda item: (-item["Points"], TEAMS[item["team_id"]]["historical_rank"]))
+    for position, item in enumerate(rows, start=1):
+        item["Position"] = position
+    return rows
+
+
+def pending_incidents(con):
+    return [
+        dict(row) for row in con.execute(
+            "SELECT * FROM career_incidents WHERE state IN ('pending','deferred') ORDER BY round_number, id"
+        ).fetchall()
+    ]
+
+
+def resolve_incident(con, incident_id, choice, chosen_amount=None):
+    row = con.execute("SELECT * FROM career_incidents WHERE id = ?", (incident_id,)).fetchone()
+    if not row or row["state"] not in {"pending", "deferred"}:
+        return
+    incident = dict(row)
+    repair_required = bool(incident.get("repair_required"))
+    safety_critical = bool(incident.get("safety_critical"))
+    # Public records sometimes establish an event but not a safe repair band.
+    # Acknowledge it without fabricating a cost or forcing an unsupported choice.
+    if choice == "review":
+        if safety_critical:
+            raise ValueError("This event includes safety-critical damage and needs a safe-repair record before the next race.")
+        con.execute("UPDATE career_incidents SET state = 'reviewed', reviewed_at = ? WHERE id = ?", (date.today().isoformat(), incident_id))
+        con.commit()
+        return
+    if not repair_required:
+        con.execute("UPDATE career_incidents SET state = 'reviewed', reviewed_at = ? WHERE id = ?", (date.today().isoformat(), incident_id))
+        con.commit()
+        return
+    if choice == "old_spec":
+        if safety_critical:
+            raise ValueError("This event includes safety-critical damage and needs at least the minimum safe repair.")
+        if incident["state"] == "deferred":
+            return
+        _insert_ledger(
+            con, incident["round_number"], "Repair decision", incident["category"], 0.0,
+            "repair_deferred", f"Older-spec components retained for {incident['title']}",
+            "Safety/readiness: older-spec components retained; historical replay results are unchanged.",
+        )
+        con.execute("UPDATE career_incidents SET state = 'deferred', chosen_amount = 0 WHERE id = ?", (incident_id,))
+        con.commit()
+        return
+    low, high = float(incident.get("cost_low", 0)), float(incident.get("cost_high", 0))
+    if choice == "full":
+        amount, kind = high, "repair_full"
+    elif choice == "minimum":
+        amount, kind = low, "repair_minimum"
+    elif choice == "custom":
+        if chosen_amount is None:
+            raise ValueError("Choose a repair amount inside the stated estimate range.")
+        amount, kind = max(low, min(high, float(chosen_amount))), "repair_custom"
+    else:
+        raise ValueError("Choose a valid repair decision.")
+    reserve_before = crash_contingency(con)["remaining"]
+    reserve_used = min(reserve_before, amount)
+    uncovered = max(0.0, amount - reserve_used)
+    effect = f"Crash contingency used: {money(reserve_used)}."
+    if uncovered:
+        effect += f" {money(uncovered)} charged beyond the planned crash allocation."
+    else:
+        effect += " Repair stays within the planned crash allocation."
+    effect += " Historical replay results are unchanged."
+    _insert_ledger(
+        con, incident["round_number"], "Repair decision", incident["category"], amount, kind,
+        f"{incident['title']} — {choice.replace('_', ' ')} repair", effect,
+    )
+    con.execute(
+        "UPDATE career_incidents SET state = 'funded', chosen_amount = ?, amount = ?, reviewed_at = ? WHERE id = ?",
+        (amount, amount, date.today().isoformat(), incident_id),
+    )
+    con.commit()
+
+
+def add_manual_incident(con, title, amount, category, reason="Manual local repair event"):
+    state = active_state(con)
+    if not state:
+        raise ValueError("Start a simulation before adding a repair event.")
+    amount = max(0.0, float(amount))
+    con.execute(
+        """INSERT INTO career_incidents
+        (round_number,title,amount,category,state,reason,responsible,source,created_at,kind,components,
+         cost_low,cost_high,estimate_label,repair_required,source_url)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            state["current_round"], title, amount, category, "pending", reason, "Manual entry", "Spend Ledger",
+            date.today().isoformat(), "manual", "Manual component declaration", amount, amount,
+            "User-entered estimate", 1, "Local manual entry",
+        ),
+    )
+    con.commit()
 
 
 def historical_context(con):
     state = active_state(con)
     if not state:
         return None
-    round_number = min(state["current_round"], len(CALENDAR))
-    track = CALENDAR[round_number - 1]
+    round_number = min(max(1, int(state["current_round"])), len(CALENDAR))
     return {
-        "round": track,
+        "round": CALENDAR[round_number - 1],
+        "weather": historical_weather(round_number),
         "strategy": strategy_for(state["team_id"], round_number),
-        "events": events_for(state["team_id"], round_number),
-        "historical_result": historical_round(state["team_id"], round_number),
+        "events": incidents_for(state["team_id"], round_number),
+        "weekend": replay_weekend(round_number) if replay_available() else {},
     }
 
 
 def finance_summary(con):
-    state = active_state(con)
     spend = total_spend(con)
-    breakdown = spend_by_category(con)
-    crash_tax = float(con.execute("SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE kind IN ('repair','repair_future_reserve','repair_breach')").fetchone()[0])
-    planned_rnd = float(con.execute("SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE kind IN ('preseason_rnd','upgrade','upgrade_reallocation') AND future_car = 0").fetchone()[0])
-    future_car = float(con.execute("SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE future_car = 1").fetchone()[0])
-    future_reserve_draw = float(con.execute("SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE kind = 'repair_future_reserve'").fetchone()[0])
+    reserve = crash_contingency(con)
+    remaining = CAP - spend
     return {
-        "state": state, "spend": spend, "remaining": CAP - spend, "breakdown": breakdown,
-        "crash_tax": crash_tax, "planned_rnd": planned_rnd, "future_car": future_car,
-        "future_reserve_draw": future_reserve_draw,
+        "state": active_state(con), "spend": spend, "remaining": remaining,
+        "discretionary_remaining": remaining - reserve["remaining"],
+        "breakdown": spend_by_category(con), "crash_tax": reserve["used"],
+        "crash_contingency": reserve,
+        "planned_rnd": float(con.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE kind IN ('preseason_rnd','upgrade') AND future_car = 0"
+        ).fetchone()[0]),
+        "future_car": float(con.execute(
+            "SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE future_car = 1"
+        ).fetchone()[0]),
+        "sanction": sanction_for(spend),
+    }
+
+
+def development_outlook(con):
+    state = active_state(con)
+    if not state:
+        return None
+    future = float(con.execute("SELECT COALESCE(SUM(amount),0) FROM career_ledger WHERE future_car = 1").fetchone()[0])
+    return {
+        "switch_round": int(state["switch_round"]),
+        "future_capital": future,
+        "current_capital": finance_summary(con)["planned_rnd"],
+        "note": "Financial planning only. No pace delta is calculated or applied to the historical replay.",
     }
 
 
@@ -493,54 +661,71 @@ def audit(con):
     summary = finance_summary(con)
     board = standings(con)
     player = next(row for row in board if row["team_id"] == state["team_id"])
-    spend, remaining = summary["spend"], summary["remaining"]
-    breach = max(0.0, spend - CAP)
-    breach_pct = breach / CAP if CAP else 0
-    if player["Position"] == 1 and breach <= 0:
+    sanction = summary["sanction"]
+    if player["Position"] == 1 and sanction["breach"] <= 0:
         verdict = "World Champions — Clean Audit"
     elif player["Position"] == 1:
         verdict = "Pyrrhic Victory — Under FIA Investigation"
-    elif breach > 0:
+    elif sanction["breach"] > 0:
         verdict = "Underperforming & Overbudget"
-    elif player["Position"] < team["historical_rank"] and remaining > 5_000_000:
+    elif player["Position"] < team["board_target_rank"] and summary["remaining"] > 5_000_000:
         verdict = "Financial Masterclass"
     else:
         verdict = "Competitive Season — Board Review"
-    if breach <= 0:
-        sanction = {"label": "Clean audit", "fine": 0, "wind_tunnel_cut": 0, "point_deduction": 0}
-    elif breach_pct <= .05:
-        sanction = {"label": "Minor gameplay breach", "fine": 5_000_000, "wind_tunnel_cut": 10, "point_deduction": 0}
-    else:
-        sanction = {"label": "Major gameplay breach", "fine": 10_000_000, "wind_tunnel_cut": 20, "point_deduction": 10}
-    sanctioned_standings = [dict(row) for row in board]
-    for row in sanctioned_standings:
-        if row["team_id"] == state["team_id"]:
-            row["Points"] = max(0, row["Points"] - sanction["point_deduction"])
-    sanctioned_standings.sort(key=lambda row: (-row["Points"], row["team_id"]))
-    for position, row in enumerate(sanctioned_standings, start=1):
-        row["Position"] = position
-    sanctioned_player = next(row for row in sanctioned_standings if row["team_id"] == state["team_id"])
     categories = spend_by_category(con)
-    efficiency = {category: lap_gain(CATEGORY_RATES[category], max(0, amount)) / max(amount, 1) for category, amount in categories.items()}
-    best_category = max(efficiency, key=efficiency.get)
-    upgrades = [row for row in ledger(con) if row["kind"] == "upgrade" and not row["future_car"]]
-    largest_upgrade = max(upgrades, key=lambda row: row["amount"], default=None)
-    redirected = [row for row in ledger(con) if row["kind"] == "upgrade_reallocation"]
-    cancelled_upgrade = min(redirected, key=lambda row: row["amount"], default=None)
-    incidents = [dict(row) for row in con.execute("SELECT * FROM career_incidents ORDER BY amount DESC").fetchall()]
-    crisis = incidents[0] if incidents else None
-    future = max(0, summary["future_car"] + max(0, remaining) - summary["future_reserve_draw"])
-    ending_gain = current_performance(con, min(max(1, state["current_round"]), len(CALENDAR)))["track_gain"]
-    next_year_aero_loss = .02 * (sanction["wind_tunnel_cut"] / 10)
+    best_category = max(categories, key=categories.get) if categories else "Other"
+    entries = ledger(con)
+    upgrades = [item for item in entries if item["kind"] == "upgrade"]
+    largest_upgrade = max(upgrades, key=lambda item: item["amount"], default=None)
+    incidents = [dict(row) for row in con.execute("SELECT * FROM career_incidents ORDER BY chosen_amount DESC, cost_high DESC").fetchall()]
+    crisis = next((item for item in incidents if item.get("chosen_amount", 0) > 0), None)
+    cancelled_upgrade = next((item for item in entries if item["kind"] in {"upgrade_cancelled", "upgrade_reduced"}), None)
+    readiness_entries = [
+        item for item in entries
+        if item["category"] in {"Personnel", "Operations", "Testing", "Chassis / structures"}
+        and item["kind"] in {"preseason_rnd", "upgrade"}
+    ]
+    best_readiness = max(readiness_entries, key=lambda item: item["amount"], default=None)
+    category_lines = [
+        {"Category": category, "Cap spend": float(categories.get(category, 0.0))}
+        for category in CATEGORIES
+    ]
+    operating_base = sum(float(item["amount"]) for item in entries if item["kind"] == "operating_base")
+    classified_repairs = summary["crash_tax"]
+    accounted = operating_base + summary["planned_rnd"] + summary["future_car"] + classified_repairs
+    financial_lines = [
+        {"Line item": "Modelled operating base", "Amount": operating_base},
+        {"Line item": "2025 development commitments", "Amount": summary["planned_rnd"]},
+        {"Line item": "Future-car commitments", "Amount": summary["future_car"]},
+        {"Line item": "Funded crash repairs", "Amount": classified_repairs},
+        {"Line item": "Other cap commitments", "Amount": max(0.0, summary["spend"] - accounted)},
+        {"Line item": "Unspent crash contingency", "Amount": summary["crash_contingency"]["remaining"]},
+    ]
+    comparators = []
+    for team_id, competitor in TEAMS.items():
+        modelled_cost = float(sum(competitor["model_cost_2024"].values()))
+        comparators.append({
+            "Team": competitor["name"],
+            "Modelled CAD / point": modelled_cost / max(1, competitor["historical_points"]),
+            "team_id": team_id,
+        })
+    grid_median = median(item["Modelled CAD / point"] for item in comparators)
+    unused_cap = max(0.0, summary["remaining"])
     return {
         "team": team, "summary": summary, "standings": board, "player": player,
-        "sanctioned_standings": sanctioned_standings, "sanctioned_player": sanctioned_player,
-        "verdict": verdict, "breach": breach, "breach_pct": breach_pct, "sanction": sanction,
-        "cost_per_point": spend / max(1, player["Points"]), "best_category": best_category,
-        "largest_upgrade": largest_upgrade, "cancelled_upgrade": cancelled_upgrade, "crisis": crisis,
-        "rank_delta": team["historical_rank"] - player["Position"],
-        "points_delta": player["Points"] - team["historical_points"],
-        "future_credits": future, "next_baseline": max(0, ending_gain + lap_gain(.25, future) - next_year_aero_loss),
-        "next_year_aero_loss": next_year_aero_loss,
-        "real_switch_proxy": team["development_proxy_round"],
+        "verdict": verdict, "sanction": sanction, "breach": sanction["breach"],
+        "cost_per_point": summary["spend"] / max(1, player["Points"]),
+        "best_category": best_category, "largest_upgrade": largest_upgrade, "crisis": crisis,
+        "cancelled_upgrade": cancelled_upgrade, "best_readiness": best_readiness,
+        "category_lines": category_lines, "financial_lines": financial_lines,
+        "grid_comparators": comparators, "grid_median_cost_per_point": grid_median,
+        "historical_rank": team["historical_rank"], "historical_points": team["historical_points"],
+        "board_target_rank": team["board_target_rank"],
+        "development_switch_round": int(state["switch_round"]),
+        "development_proxy_round": team["development_proxy_round"],
+        "development_proxy_note": "Local inferred public-season proxy; real internal development switch dates are not public.",
+        "future_capital": summary["future_car"],
+        "unused_cap_credit": unused_cap,
+        "next_year_aero_allowance": 100 - sanction["wind_tunnel_cut"],
+        "next_year_note": "Game rule: each unspent CAD dollar becomes one starter R&D credit. No 2026 pace delta is calculated.",
     }

@@ -1,5 +1,13 @@
 # Visual asset attribution
 
+## Licensed driver photographs
+
+`assets/drivers/photos/` contains local resized derivatives of licensed
+Wikimedia Commons photographs for the 21 drivers who raced in the 2025 season.
+Every photograph has a source page, author credit, and licence entry in
+[assets/drivers/ATTRIBUTIONS.md](assets/drivers/ATTRIBUTIONS.md). The photos are
+not official Formula 1 or constructor artwork.
+
 ## Driver avatar pack
 
 The SVG files in `assets/drivers/` are original, programmatic fallback avatars created for this project. They are abstract initials graphics, not photographs, portraits, team logos, or likenesses of any driver.

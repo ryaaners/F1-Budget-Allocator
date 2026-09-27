@@ -1,0 +1,1425 @@
+{
+  "season": 2025,
+  "source_notes": [
+    "Coverage is classification-driven: each 2025 Grand Prix or Sprint entry in historical_2025.json with Retired, Disqualified, or Did not start status is represented here.",
+    "Jolpica classification records establish final status only. Where no primary report establishes cause, fault, damaged components, or a repair amount, this file says so rather than inferring one.",
+    "Detailed records link to Formula1.com reporting. Team invoices and FIA cost-cap filings are not public; any non-zero range is a public component-cost proxy, never an actual team cost or FIA finding.",
+    "Public estimate reference: https://f1.top-app.eu/destructors-championship. CAD ranges are only supplied after physical damage is publicly described."
+  ],
+  "incidents": [
+    {
+      "round": 1,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "doohan",
+      "kind": "crash",
+      "title": "Jack Doohan — first-lap barrier impact",
+      "reason": "Doohan crashed on the first racing lap at Turn 6 in wet conditions after the rear tyres appeared to spin up on a gear shift.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/hadjar-doohan-and-sainz-all-crash-out-after-less-than-a-lap-as-australian.4LlZvVRi0XG8Mmjc8kf7k6",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 1,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "alonso",
+      "kind": "crash",
+      "title": "Fernando Alonso — Turn 6/7 barrier impact",
+      "reason": "Alonso lost traction near the Turn 6 kerb, spun and made heavy contact with the wall before retiring.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/alonso-left-baffled-by-unlucky-crash-that-came-from-nowhere-during.76NEebYJ1snskKsAupDAjj.html",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 1,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "hadjar",
+      "kind": "crash",
+      "title": "Isack Hadjar — formation-lap barrier impact",
+      "reason": "Hadjar spun into the barriers at Turn 2 in wet conditions on the formation lap. Formula 1 reported significant rear-wing damage and the start was delayed.",
+      "components": [
+        "Rear wing",
+        "Unknown — no full public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/hadjar-doohan-and-sainz-all-crash-out-after-less-than-a-lap-as-australian.4LlZvVRi0XG8Mmjc8kf7k6",
+      "cost_low_cad": 250000,
+      "cost_high_cad": 650000,
+      "estimate_label": "Public component-cost proxy; not a team invoice",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 1,
+      "team_id": "red_bull",
+      "session": "Grand Prix",
+      "driver_id": "lawson",
+      "kind": "retirement",
+      "title": "Liam Lawson — retired",
+      "reason": "The official 2025 Grand Prix classification lists Liam Lawson as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/1/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 1,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "bortoleto",
+      "kind": "retirement",
+      "title": "Gabriel Bortoleto — retired",
+      "reason": "The official 2025 Grand Prix classification lists Gabriel Bortoleto as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/1/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 1,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "sainz",
+      "kind": "crash",
+      "title": "Carlos Sainz — Safety Car period barrier impact",
+      "reason": "During the first Safety Car period, Sainz lost the rear of the Williams at the final corner and hit the wall.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/hadjar-doohan-and-sainz-all-crash-out-after-less-than-a-lap-as-australian.4LlZvVRi0XG8Mmjc8kf7k6",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 2,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "gasly",
+      "kind": "penalty",
+      "title": "Pierre Gasly — disqualified for underweight car",
+      "reason": "Post-race checks found the Alpine below the minimum weight after the prescribed fuel-mass check.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Alpine technical-compliance breach (official disqualification)",
+      "source_url": "https://www.formula1.com/en/latest/article/breaking-leclerc-and-gasly-disqualified-from-chinese-grand-prix-over-car.54Vi7LDb8IB3htmZ3OlJTb",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 2,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "alonso",
+      "kind": "retirement",
+      "title": "Fernando Alonso — retired",
+      "reason": "The official 2025 Grand Prix classification lists Fernando Alonso as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/2/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 2,
+      "team_id": "ferrari",
+      "session": "Grand Prix",
+      "driver_id": "hamilton",
+      "kind": "penalty",
+      "title": "Lewis Hamilton — disqualified for rear skid-block wear",
+      "reason": "Post-race inspection found the Ferrari rear skid block below the minimum thickness required by the Technical Regulations.",
+      "components": [
+        "Rear skid block / plank"
+      ],
+      "responsible": "Ferrari technical-compliance breach (official disqualification)",
+      "source_url": "https://www.formula1.com/en/latest/article/breaking-leclerc-and-gasly-disqualified-from-chinese-grand-prix-over-car.54Vi7LDb8IB3htmZ3OlJTb",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 2,
+      "team_id": "ferrari",
+      "session": "Grand Prix",
+      "driver_id": "leclerc",
+      "kind": "penalty",
+      "title": "Charles Leclerc — disqualified for underweight car",
+      "reason": "Post-race checks found the Ferrari below the minimum weight after the prescribed fuel-drain procedure. The report notes an earlier damaged front-wing endplate, but the disqualification was for car weight.",
+      "components": [
+        "Front-wing endplate (damage noted in report)",
+        "Unknown — no full repair report"
+      ],
+      "responsible": "Ferrari technical-compliance breach (official disqualification)",
+      "source_url": "https://www.formula1.com/en/latest/article/breaking-leclerc-and-gasly-disqualified-from-chinese-grand-prix-over-car.54Vi7LDb8IB3htmZ3OlJTb",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 4,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "doohan",
+      "kind": "penalty",
+      "title": "Jack Doohan — track-limits time penalty",
+      "reason": "The official result note records a five-second time penalty for track-limit infringements.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Jack Doohan (stewards imposed the penalty)",
+      "source_url": "https://www.formula1.com/en/results/2025/races/1257/bahrain/race-result",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 4,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "lawson",
+      "kind": "penalty",
+      "title": "Liam Lawson — two collision time penalties",
+      "reason": "The official result note records a five-second and a 10-second time penalty for causing collisions.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Liam Lawson (stewards imposed the penalties)",
+      "source_url": "https://www.formula1.com/en/results/2025/races/1257/bahrain/race-result",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 4,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "hulkenberg",
+      "kind": "penalty",
+      "title": "Nico Hulkenberg — disqualified for excessive skid-block wear",
+      "reason": "The final classification records a technical-infringement disqualification; Kick Sauber said the skid block had excessive wear.",
+      "components": [
+        "Skid block / plank"
+      ],
+      "responsible": "Kick Sauber technical-compliance breach (official disqualification)",
+      "source_url": "https://www.formula1.com/en/video/hulkenberg-kick-sauber-will-take-learnings-after-bahrain-dsq.1829659187495185805",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 4,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "sainz",
+      "kind": "retirement",
+      "title": "Carlos Sainz — retired",
+      "reason": "The official 2025 Grand Prix classification lists Carlos Sainz as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/4/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 5,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "gasly",
+      "kind": "retirement",
+      "title": "Pierre Gasly — retired",
+      "reason": "The official 2025 Grand Prix classification lists Pierre Gasly as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/5/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 5,
+      "team_id": "red_bull",
+      "session": "Grand Prix",
+      "driver_id": "tsunoda",
+      "kind": "retirement",
+      "title": "Yuki Tsunoda — retired",
+      "reason": "The official 2025 Grand Prix classification lists Yuki Tsunoda as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/5/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 6,
+      "team_id": "aston_martin",
+      "session": "Sprint",
+      "driver_id": "alonso",
+      "kind": "retirement",
+      "title": "Fernando Alonso — retired",
+      "reason": "The official 2025 Sprint classification lists Fernando Alonso as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/6/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 6,
+      "team_id": "ferrari",
+      "session": "Sprint",
+      "driver_id": "leclerc",
+      "kind": "retirement",
+      "title": "Charles Leclerc — retired",
+      "reason": "The official 2025 Sprint classification lists Charles Leclerc as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/6/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 6,
+      "team_id": "williams",
+      "session": "Sprint",
+      "driver_id": "sainz",
+      "kind": "retirement",
+      "title": "Carlos Sainz — retired",
+      "reason": "The official 2025 Sprint classification lists Carlos Sainz as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/6/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 6,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "doohan",
+      "kind": "crash",
+      "title": "Jack Doohan — Turn 1 contact with Liam Lawson",
+      "reason": "Doohan made contact with Lawson at Turn 1. Alpine reported that the damage was too great to return to the pits safely, so the car was retired.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/what-the-teams-said-race-day-in-miami-2025.1Yz75nLpjVhChSzeU8XtHv",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 6,
+      "team_id": "haas",
+      "session": "Grand Prix",
+      "driver_id": "bearman",
+      "kind": "retirement",
+      "title": "Oliver Bearman — retired",
+      "reason": "The official 2025 Grand Prix classification lists Oliver Bearman as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/6/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 6,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "lawson",
+      "kind": "crash",
+      "title": "Liam Lawson — Turn 1 contact with Jack Doohan",
+      "reason": "Lawson was spun in first-lap contact with Doohan and later retired after the damage proved too extensive to continue.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/lawson-reflects-on-tough-race-in-miami-after-lap-1-contact-as-hadjar-rues.3Krl8N6zGhUTfQkULUvJbH",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 6,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "bortoleto",
+      "kind": "retirement",
+      "title": "Gabriel Bortoleto — retired",
+      "reason": "The official 2025 Grand Prix classification lists Gabriel Bortoleto as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/6/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 7,
+      "team_id": "haas",
+      "session": "Grand Prix",
+      "driver_id": "ocon",
+      "kind": "retirement",
+      "title": "Esteban Ocon — retired",
+      "reason": "The official 2025 Grand Prix classification lists Esteban Ocon as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/7/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 7,
+      "team_id": "mercedes",
+      "session": "Grand Prix",
+      "driver_id": "antonelli",
+      "kind": "retirement",
+      "title": "Andrea Kimi Antonelli — retired",
+      "reason": "The official 2025 Grand Prix classification lists Andrea Kimi Antonelli as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/7/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 8,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "gasly",
+      "kind": "crash",
+      "title": "Pierre Gasly — Nouvelle Chicane contact and retirement",
+      "reason": "Gasly hit the rear of Yuki Tsunoda under braking at the Nouvelle Chicane. The front-left contacted the Red Bull right-rear and the Alpine suspension broke; Gasly retired in the pits.",
+      "components": [
+        "Front-left tyre / wheel",
+        "Front suspension",
+        "Front wing (team report)"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/watch-gasly-forced-to-retire-from-monaco-grand-prix-after-collision-with.9hmhyvYyzhPgEfOXcFxNU",
+      "cost_low_cad": 350000,
+      "cost_high_cad": 850000,
+      "estimate_label": "Public component-cost proxy; not a team invoice",
+      "safety_critical": true,
+      "repair_required": true
+    },
+    {
+      "round": 8,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "alonso",
+      "kind": "retirement",
+      "title": "Fernando Alonso — retired",
+      "reason": "The official 2025 Grand Prix classification lists Fernando Alonso as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/8/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 9,
+      "team_id": "mercedes",
+      "session": "Grand Prix",
+      "driver_id": "antonelli",
+      "kind": "retirement",
+      "title": "Andrea Kimi Antonelli — retired",
+      "reason": "The official 2025 Grand Prix classification lists Andrea Kimi Antonelli as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/9/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 9,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "albon",
+      "kind": "retirement",
+      "title": "Alexander Albon — retired",
+      "reason": "The official 2025 Grand Prix classification lists Alexander Albon as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/9/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 10,
+      "team_id": "mclaren",
+      "session": "Grand Prix",
+      "driver_id": "norris",
+      "kind": "crash",
+      "title": "Lando Norris — collision with Oscar Piastri and retirement",
+      "reason": "Norris hit the rear of Piastri’s car on the start-finish straight, then struck the wall and retired. Norris accepted responsibility; a five-second post-race collision penalty was applied.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Lando Norris (accepted responsibility; post-race time penalty)",
+      "source_url": "https://www.formula1.com/en/latest/article/russell-takes-solid-victory-as-piastri-and-norris-collide-late-on-in.2cri9oFCALqhfsbvpqDfBq",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 10,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "lawson",
+      "kind": "retirement",
+      "title": "Liam Lawson — retired",
+      "reason": "The official 2025 Grand Prix classification lists Liam Lawson as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/10/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 10,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "albon",
+      "kind": "retirement",
+      "title": "Alexander Albon — retired",
+      "reason": "The official 2025 Grand Prix classification lists Alexander Albon as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/10/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 11,
+      "team_id": "mercedes",
+      "session": "Grand Prix",
+      "driver_id": "antonelli",
+      "kind": "crash",
+      "title": "Kimi Antonelli — Turn 3 collision with Max Verstappen",
+      "reason": "Antonelli locked the rear tyres under braking for Turn 3, lost control and hit Verstappen. He received a three-place grid penalty for causing the collision.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Kimi Antonelli (three-place grid penalty for causing collision)",
+      "source_url": "https://www.formula1.com/en/latest/article/austria-lowdown-all-the-key-moments-as-the-mclarens-duel-red-bull-suffer-and.7DG4DaK04hYZKL97D6xjr9",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 11,
+      "team_id": "red_bull",
+      "session": "Grand Prix",
+      "driver_id": "max_verstappen",
+      "kind": "crash",
+      "title": "Max Verstappen — Turn 3 collision retirement",
+      "reason": "Verstappen retired after Antonelli lost control under braking for Turn 3 and hit the Red Bull. Formula 1 reported Antonelli received a three-place grid penalty for causing the collision.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Kimi Antonelli (three-place grid penalty for causing collision)",
+      "source_url": "https://www.formula1.com/en/latest/article/austria-lowdown-all-the-key-moments-as-the-mclarens-duel-red-bull-suffer-and.7DG4DaK04hYZKL97D6xjr9",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 11,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "albon",
+      "kind": "retirement",
+      "title": "Alexander Albon — retired",
+      "reason": "The official 2025 Grand Prix classification lists Alexander Albon as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/11/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 11,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "sainz",
+      "kind": "dnf",
+      "title": "Carlos Sainz — did not start",
+      "reason": "The official 2025 Grand Prix classification lists Carlos Sainz as Did not start. No further cause is claimed by this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/11/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 12,
+      "team_id": "alpine",
+      "session": "Grand Prix",
+      "driver_id": "colapinto",
+      "kind": "dnf",
+      "title": "Franco Colapinto — did not start",
+      "reason": "The official 2025 Grand Prix classification lists Franco Colapinto as Did not start. No further cause is claimed by this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/12/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 12,
+      "team_id": "mercedes",
+      "session": "Grand Prix",
+      "driver_id": "antonelli",
+      "kind": "crash",
+      "title": "Kimi Antonelli — struck by Isack Hadjar at restart",
+      "reason": "Antonelli retired after Hadjar hit the rear of the Mercedes in heavy spray as the race restarted.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/zero-visibility-hadjar-explains-kimi-antonelli-crash-as-liam-lawson-rues-missed.3NJmNO6LpOnpFttg5DFQNL",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 12,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "hadjar",
+      "kind": "crash",
+      "title": "Isack Hadjar — rear-end collision with Kimi Antonelli",
+      "reason": "In heavy spray at the restart, Hadjar hit the rear of Antonelli’s Mercedes and retired. Formula 1 reported both drivers were unhurt.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/zero-visibility-hadjar-explains-kimi-antonelli-crash-as-liam-lawson-rues-missed.3NJmNO6LpOnpFttg5DFQNL",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 12,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "lawson",
+      "kind": "crash",
+      "title": "Liam Lawson — opening-lap contact with Esteban Ocon",
+      "reason": "Lawson retired after an opening-lap collision with Ocon. The stewards treated the incident as a racing incident.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/zero-visibility-hadjar-explains-kimi-antonelli-crash-as-liam-lawson-rues-missed.3NJmNO6LpOnpFttg5DFQNL",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 12,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "bortoleto",
+      "kind": "retirement",
+      "title": "Gabriel Bortoleto — retired",
+      "reason": "The official 2025 Grand Prix classification lists Gabriel Bortoleto as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/12/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 13,
+      "team_id": "alpine",
+      "session": "Sprint",
+      "driver_id": "gasly",
+      "kind": "retirement",
+      "title": "Pierre Gasly — retired",
+      "reason": "The official 2025 Sprint classification lists Pierre Gasly as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/13/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 14,
+      "team_id": "haas",
+      "session": "Grand Prix",
+      "driver_id": "bearman",
+      "kind": "retirement",
+      "title": "Oliver Bearman — retired",
+      "reason": "The official 2025 Grand Prix classification lists Oliver Bearman as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/14/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 15,
+      "team_id": "ferrari",
+      "session": "Grand Prix",
+      "driver_id": "hamilton",
+      "kind": "crash",
+      "title": "Lewis Hamilton — Turn 3 barrier impact",
+      "reason": "Hamilton lost control on the damp painted section at Turn 3 as light rain fell, hit the barrier and retired.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/watch-leclercs-dutch-grand-prix-ends-after-collision-with-antonelli.2nHREqR6mpZIPcfnwYheOu.2nHREqR6mpZIPcfnwYheOu.2nHREqR6mpZIPcfnwYheOu.2nHREqR6mpZIPcfnwYheOu",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 15,
+      "team_id": "ferrari",
+      "session": "Grand Prix",
+      "driver_id": "leclerc",
+      "kind": "crash",
+      "title": "Charles Leclerc — Turn 3 collision with Kimi Antonelli",
+      "reason": "Antonelli drifted into Leclerc through the Turn 3 banking, sending the Ferrari into the barrier. Antonelli received a 10-second penalty for causing the collision.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Kimi Antonelli (10-second penalty for causing collision)",
+      "source_url": "https://www.formula1.com/en/latest/article/watch-leclercs-dutch-grand-prix-ends-after-collision-with-antonelli.2nHREqR6mpZIPcfnwYheOu.2nHREqR6mpZIPcfnwYheOu.2nHREqR6mpZIPcfnwYheOu.2nHREqR6mpZIPcfnwYheOu",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 15,
+      "team_id": "mclaren",
+      "session": "Grand Prix",
+      "driver_id": "norris",
+      "kind": "retirement",
+      "title": "Lando Norris — retired",
+      "reason": "The official 2025 Grand Prix classification lists Lando Norris as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/15/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 16,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "alonso",
+      "kind": "retirement",
+      "title": "Fernando Alonso — retired",
+      "reason": "The official 2025 Grand Prix classification lists Fernando Alonso as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/16/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 16,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "hulkenberg",
+      "kind": "dnf",
+      "title": "Nico Hülkenberg — did not start",
+      "reason": "The official 2025 Grand Prix classification lists Nico Hülkenberg as Did not start. No further cause is claimed by this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/16/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 17,
+      "team_id": "mclaren",
+      "session": "Grand Prix",
+      "driver_id": "piastri",
+      "kind": "retirement",
+      "title": "Oscar Piastri — retired",
+      "reason": "The official 2025 Grand Prix classification lists Oscar Piastri as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/17/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 19,
+      "team_id": "aston_martin",
+      "session": "Sprint",
+      "driver_id": "alonso",
+      "kind": "retirement",
+      "title": "Fernando Alonso — retired",
+      "reason": "The official 2025 Sprint classification lists Fernando Alonso as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/19/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 19,
+      "team_id": "aston_martin",
+      "session": "Sprint",
+      "driver_id": "stroll",
+      "kind": "retirement",
+      "title": "Lance Stroll — retired",
+      "reason": "The official 2025 Sprint classification lists Lance Stroll as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/19/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 19,
+      "team_id": "haas",
+      "session": "Sprint",
+      "driver_id": "ocon",
+      "kind": "retirement",
+      "title": "Esteban Ocon — retired",
+      "reason": "The official 2025 Sprint classification lists Esteban Ocon as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/19/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 19,
+      "team_id": "mclaren",
+      "session": "Sprint",
+      "driver_id": "norris",
+      "kind": "retirement",
+      "title": "Lando Norris — retired",
+      "reason": "The official 2025 Sprint classification lists Lando Norris as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/19/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 19,
+      "team_id": "mclaren",
+      "session": "Sprint",
+      "driver_id": "piastri",
+      "kind": "retirement",
+      "title": "Oscar Piastri — retired",
+      "reason": "The official 2025 Sprint classification lists Oscar Piastri as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/19/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 19,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "sainz",
+      "kind": "retirement",
+      "title": "Carlos Sainz — retired",
+      "reason": "The official 2025 Grand Prix classification lists Carlos Sainz as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/19/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 20,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "alonso",
+      "kind": "retirement",
+      "title": "Fernando Alonso — retired",
+      "reason": "The official 2025 Grand Prix classification lists Fernando Alonso as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/20/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 20,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "lawson",
+      "kind": "crash",
+      "title": "Liam Lawson — first-lap collision damage and retirement",
+      "reason": "Lawson suffered first-lap contact with Carlos Sainz, changed the front wing, then retired when wider car damage was too extensive. The stewards took no further action.",
+      "components": [
+        "Front wing",
+        "Side of car (not itemised publicly)"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/lawson-retired-with-a-destroyed-car-as-hadjar-did-not-have-the-pace-for.5aZqqh7bExeC5tXAiEeEJE",
+      "cost_low_cad": 300000,
+      "cost_high_cad": 950000,
+      "estimate_label": "Public component-cost proxy; not a team invoice",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 20,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "hulkenberg",
+      "kind": "retirement",
+      "title": "Nico Hülkenberg — retired",
+      "reason": "The official 2025 Grand Prix classification lists Nico Hülkenberg as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/20/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 20,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "sainz",
+      "kind": "retirement",
+      "title": "Carlos Sainz — retired",
+      "reason": "The official 2025 Grand Prix classification lists Carlos Sainz as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/20/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 21,
+      "team_id": "alpine",
+      "session": "Sprint",
+      "driver_id": "colapinto",
+      "kind": "retirement",
+      "title": "Franco Colapinto — retired",
+      "reason": "The official 2025 Sprint classification lists Franco Colapinto as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/21/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 21,
+      "team_id": "mclaren",
+      "session": "Sprint",
+      "driver_id": "piastri",
+      "kind": "retirement",
+      "title": "Oscar Piastri — retired",
+      "reason": "The official 2025 Sprint classification lists Oscar Piastri as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/21/sprint.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 21,
+      "team_id": "sauber",
+      "session": "Sprint",
+      "driver_id": "bortoleto",
+      "kind": "crash",
+      "title": "Gabriel Bortoleto — Sprint barrier impact",
+      "reason": "Bortoleto hit the inside wall at Turn 1 while trying to escape Albon’s slipstream, then crossed the track into the barriers. The reported impact was 57g.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/bortoleto-evaluates-one-of-the-toughest-weekends-after-double-crash-in-his-first.7q3UaRQkyAO2zAVU5YtIod",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 21,
+      "team_id": "ferrari",
+      "session": "Grand Prix",
+      "driver_id": "hamilton",
+      "kind": "crash",
+      "title": "Lewis Hamilton — first-lap collision damage and retirement",
+      "reason": "Hamilton sustained floor and front-wing damage in opening-lap incidents, then retired after the damage proved unmanageable. Formula 1 reported a five-second penalty for causing a collision.",
+      "components": [
+        "Floor",
+        "Front wing"
+      ],
+      "responsible": "Lewis Hamilton (five-second penalty for causing collision)",
+      "source_url": "https://www.formula1.com/en/latest/article/what-the-teams-said-race-day-in-brazil-2025.3DU4t6UVItfM6p8Q4rJW59",
+      "cost_low_cad": 350000,
+      "cost_high_cad": 850000,
+      "estimate_label": "Public component-cost proxy; not a team invoice",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 21,
+      "team_id": "ferrari",
+      "session": "Grand Prix",
+      "driver_id": "leclerc",
+      "kind": "crash",
+      "title": "Charles Leclerc — collateral collision damage and retirement",
+      "reason": "After Piastri hit Antonelli at the restart, the Mercedes struck Leclerc. The Ferrari suffered a puncture and front-suspension damage, forcing retirement.",
+      "components": [
+        "Tyre / puncture",
+        "Front suspension"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/what-the-teams-said-race-day-in-brazil-2025.3DU4t6UVItfM6p8Q4rJW59",
+      "cost_low_cad": 350000,
+      "cost_high_cad": 850000,
+      "estimate_label": "Public component-cost proxy; not a team invoice",
+      "safety_critical": true,
+      "repair_required": true
+    },
+    {
+      "round": 21,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "bortoleto",
+      "kind": "crash",
+      "title": "Gabriel Bortoleto — first-lap barrier impact after Stroll contact",
+      "reason": "Bortoleto hit the barriers on the opening lap after contact with Lance Stroll and retired. The official report describes a Safety Car for recovery.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://www.formula1.com/en/latest/article/norris-wins-thrilling-sao-paulo-gp-from-antonelli-as-verstappen-climbs-to.4T0Y5xGNn1MOVegzhGTqAx",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 22,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "stroll",
+      "kind": "crash",
+      "title": "Lance Stroll — Turn 1 collision retirement",
+      "reason": "Stroll was hit in the Turn 1 collision with Bortoleto and retired immediately. Aston Martin reported significant damage.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Gabriel Bortoleto (five-place grid penalty for causing collision)",
+      "source_url": "https://www.formula1.com/en/latest/article/verstappen-beats-norris-for-dominant-las-vegas-gp-victory-as-piastri.6u1Op0SO7YQa2bwJOq8DVI",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 22,
+      "team_id": "mclaren",
+      "session": "Grand Prix",
+      "driver_id": "norris",
+      "kind": "penalty",
+      "title": "Lando Norris — disqualified for rear skid wear",
+      "reason": "Post-race inspection found the rearmost skid wear below the 9 mm minimum in the Technical Regulations.",
+      "components": [
+        "Rearmost skid / plank"
+      ],
+      "responsible": "McLaren technical-compliance breach (official disqualification)",
+      "source_url": "https://www.formula1.com/en/latest/article/norris-and-piastri-disqualified-from-las-vegas-gp-as-mclarens-fail-post-race.10uHwsN6mLfCNoZ6nKQvPy",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 22,
+      "team_id": "mclaren",
+      "session": "Grand Prix",
+      "driver_id": "piastri",
+      "kind": "penalty",
+      "title": "Oscar Piastri — disqualified for rear skid wear",
+      "reason": "Post-race inspection found the rearmost skid wear below the 9 mm minimum in the Technical Regulations.",
+      "components": [
+        "Rearmost skid / plank"
+      ],
+      "responsible": "McLaren technical-compliance breach (official disqualification)",
+      "source_url": "https://www.formula1.com/en/latest/article/norris-and-piastri-disqualified-from-las-vegas-gp-as-mclarens-fail-post-race.10uHwsN6mLfCNoZ6nKQvPy",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 22,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "bortoleto",
+      "kind": "crash",
+      "title": "Gabriel Bortoleto — Turn 1 collision with Lance Stroll",
+      "reason": "Bortoleto collided with Stroll at Turn 1, spun and retired on the second lap. The stewards issued a five-place grid penalty for Qatar and two penalty points.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Gabriel Bortoleto (five-place grid penalty for causing collision)",
+      "source_url": "https://www.formula1.com/en/latest/article/bortoleto-handed-five-place-grid-penalty-for-turn-1-crash-with-stroll-in-las.grSZWRuORCxfRQyzWGaTS.grSZWRuORCxfRQyzWGaTS",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 22,
+      "team_id": "williams",
+      "session": "Grand Prix",
+      "driver_id": "albon",
+      "kind": "crash",
+      "title": "Alex Albon — Hamilton contact, front-wing replacement and retirement",
+      "reason": "Albon collided with Hamilton, took a new front wing and later retired with damage. The official report also notes a five-second collision penalty.",
+      "components": [
+        "Front wing",
+        "Unknown — no full public component report"
+      ],
+      "responsible": "Alex Albon (five-second collision penalty)",
+      "source_url": "https://www.formula1.com/en/latest/article/verstappen-beats-norris-for-dominant-las-vegas-gp-victory-as-piastri.6u1Op0SO7YQa2bwJOq8DVI",
+      "cost_low_cad": 200000,
+      "cost_high_cad": 500000,
+      "estimate_label": "Public component-cost proxy; not a team invoice",
+      "safety_critical": false,
+      "repair_required": true
+    },
+    {
+      "round": 23,
+      "team_id": "aston_martin",
+      "session": "Grand Prix",
+      "driver_id": "stroll",
+      "kind": "retirement",
+      "title": "Lance Stroll — retired",
+      "reason": "The official 2025 Grand Prix classification lists Lance Stroll as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/23/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 23,
+      "team_id": "haas",
+      "session": "Grand Prix",
+      "driver_id": "bearman",
+      "kind": "retirement",
+      "title": "Oliver Bearman — retired",
+      "reason": "The official 2025 Grand Prix classification lists Oliver Bearman as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/23/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 23,
+      "team_id": "racing_bulls",
+      "session": "Grand Prix",
+      "driver_id": "hadjar",
+      "kind": "retirement",
+      "title": "Isack Hadjar — retired",
+      "reason": "The official 2025 Grand Prix classification lists Isack Hadjar as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/23/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    },
+    {
+      "round": 23,
+      "team_id": "sauber",
+      "session": "Grand Prix",
+      "driver_id": "hulkenberg",
+      "kind": "retirement",
+      "title": "Nico Hülkenberg — retired",
+      "reason": "The official 2025 Grand Prix classification lists Nico Hülkenberg as Retired. No cause or repairable damage is established in this bundled classification record.",
+      "components": [
+        "Unknown — no public component report"
+      ],
+      "responsible": "Not officially assigned",
+      "source_url": "https://api.jolpi.ca/ergast/f1/2025/23/results.json",
+      "cost_low_cad": 0,
+      "cost_high_cad": 0,
+      "estimate_label": "No repair cost established",
+      "safety_critical": false,
+      "repair_required": false
+    }
+  ]
+}
