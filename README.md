@@ -12,8 +12,8 @@ Launch Streamlit through Python so it works even if the user-level `streamlit`
 command is not on your `PATH`:
 
 ```bash
-cd /Users/ryaanmahmood/Downloads/f1-budget-allocator
-python3 -m pip install --user -r requirements.txt
+cd /path/to/f1-budget-allocator
+python3 -m pip install -r requirements.txt
 python3 -m streamlit run app.py
 ```
 
