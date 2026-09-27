@@ -66,6 +66,10 @@ staffing, inspection/sign-off, release approval, or validated risk inputs. It
 therefore does not calculate a readiness score, recommend a repair, predict a
 failure, or authorise a car release.
 
+User-added repair events from the Season ledger are displayed separately as
+local planning entries. They are never presented as historical incident
+evidence or source-backed records.
+
 ## Weather and strategy reference cards
 
 `data/historical_weekend_context_2025.json` is the locally bundled race

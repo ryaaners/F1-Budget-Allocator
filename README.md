@@ -104,11 +104,12 @@ the warning includes a damaged-area summary and a CAD low-to-high repair band.
 Those bands are local gameplay estimates based on public component-cost
 references; they are not team invoices, FIA figures, or official repair costs.
 
-For a repairable event, choose the project's minimum repair record, a full
-current-spec repair, a custom funded amount, or certified older-spec parts
-where eligible. A project-critical repair record cannot be deferred to
-older-spec parts. Incidents that do not have a public repair estimate can be
-reviewed and retained in the ledger without inventing a cost.
+For a repairable event, record the low end of the local estimate, the high-end
+current-spec estimate, a custom local amount, or a local ledger choice to reuse
+older-spec parts where eligible. A project-critical repair record cannot use
+the deferred-parts option. When public reporting does not support a cost band,
+the app records a source limitation rather than claiming a repair, safety
+outcome, or vehicle release.
 
 The **Season ledger** records an explicit **Effects** description for every
 entry. It distinguishes crash-cover allocation, repair-record status,

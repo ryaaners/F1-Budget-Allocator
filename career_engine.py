@@ -551,16 +551,20 @@ def safety_planning_snapshot(con):
             "SELECT * FROM career_incidents ORDER BY round_number, id"
         ).fetchall()
     ]
+    manual_records = [item for item in records if item.get("kind") == "manual"]
+    historical_records = [item for item in records if item.get("kind") != "manual"]
     open_records = [item for item in records if item["state"] in {"pending", "deferred"}]
     open_repair_records = [item for item in open_records if bool(item.get("repair_required"))]
     open_critical_records = [item for item in open_records if bool(item.get("safety_critical"))]
     source_linked_records = [
-        item for item in records
+        item for item in historical_records
         if str(item.get("source_url") or "").startswith(("https://", "http://"))
     ]
     return {
         "state": state,
         "records": records,
+        "historical_records": historical_records,
+        "manual_records": manual_records,
         "open_records": open_records,
         "open_repair_records": open_repair_records,
         "open_critical_records": open_critical_records,
@@ -612,6 +616,20 @@ def resolve_incident(con, incident_id, choice, chosen_amount=None):
         con.commit()
         return
     low, high = float(incident.get("cost_low", 0)), float(incident.get("cost_high", 0))
+    if choice == "source_limited":
+        if not safety_critical or high > 0:
+            raise ValueError("This acknowledgement is available only for a project-critical record without a supported repair-cost band.")
+        _insert_ledger(
+            con, incident["round_number"], "Repair decision", incident["category"], 0.0,
+            "repair_source_limited", f"Source limitation acknowledged for {incident['title']}",
+            "Source limitation acknowledged; no repair cost, safety outcome, or vehicle release is claimed.",
+        )
+        con.execute(
+            "UPDATE career_incidents SET state = 'source_limited', chosen_amount = 0, reviewed_at = ? WHERE id = ?",
+            (date.today().isoformat(), incident_id),
+        )
+        con.commit()
+        return
     if choice == "full":
         amount, kind = high, "repair_full"
     elif choice == "minimum":
@@ -622,6 +640,11 @@ def resolve_incident(con, incident_id, choice, chosen_amount=None):
         amount, kind = max(low, min(high, float(chosen_amount))), "repair_custom"
     else:
         raise ValueError("Choose a valid repair decision.")
+    choice_label = {
+        "full": "high-end local estimate",
+        "minimum": "low-end local estimate",
+        "custom": "custom local estimate",
+    }[choice]
     reserve_before = crash_contingency(con)["remaining"]
     reserve_used = min(reserve_before, amount)
     uncovered = max(0.0, amount - reserve_used)
@@ -633,7 +656,7 @@ def resolve_incident(con, incident_id, choice, chosen_amount=None):
     effect += " Historical replay results are unchanged."
     _insert_ledger(
         con, incident["round_number"], "Repair decision", incident["category"], amount, kind,
-        f"{incident['title']} — {choice.replace('_', ' ')} repair", effect,
+        f"{incident['title']} — {choice_label}", effect,
     )
     con.execute(
         "UPDATE career_incidents SET state = 'funded', chosen_amount = ?, amount = ?, reviewed_at = ? WHERE id = ?",

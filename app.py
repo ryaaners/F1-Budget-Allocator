@@ -320,8 +320,8 @@ def render_incident_decisions(con):
             low, high = float(incident.get("cost_low", 0)), float(incident.get("cost_high", 0))
             if high <= 0:
                 if bool(incident.get("safety_critical")):
-                    st.error("Project critical-repair flag: the replay needs a repair decision before the next race. The public record does not support a cost estimate.")
-                    action_label, action = "Record project repair status", "minimum"
+                    st.error("Project critical-repair flag: the replay needs a source-limitation acknowledgement before the next race. The public record does not support a cost estimate.")
+                    action_label, action = "Acknowledge source limitation", "source_limited"
                 else:
                     st.info("A repair was required, but public sources do not support a cost range. Record it without a fabricated invoice.")
                     action_label, action = "Record source limitation", "review"
@@ -331,21 +331,21 @@ def render_incident_decisions(con):
                 continue
             st.metric("Local repair estimate range", f"CAD ${low:,.0f} – CAD ${high:,.0f}")
             st.caption(incident.get("estimate_label") or "Public estimate; not a team invoice.")
-            options = ["Minimum recorded repair", "Choose repair amount", "Full current-spec repair"]
+            options = ["Record low-end estimate", "Choose repair amount", "Record high-end current-spec estimate"]
             if not bool(incident.get("safety_critical")):
-                options.append("Use certified older-spec parts")
+                options.append("Reuse older-spec parts (local ledger choice)")
             else:
-                st.error("Project critical-repair flag: the replay requires at least its minimum repair record. This is not a vehicle release decision.")
-            decision = st.radio("Repair plan", options, key=f"decision_{incident['id']}")
+                st.error("Project critical-repair flag: the replay requires a local finance record before advancing. This is not a vehicle release decision.")
+            decision = st.radio("Local finance record", options, key=f"decision_{incident['id']}")
             selected_amount = None
             if decision == "Choose repair amount":
                 selected_amount = st.number_input("Repair amount (CAD)", min_value=low, max_value=high, value=(low + high) / 2, step=max(1_000.0, (high - low) / 20), key=f"amount_{incident['id']}")
-            if st.button("Record repair decision", key=f"repair_{incident['id']}"):
+            if st.button("Record local finance decision", key=f"repair_{incident['id']}"):
                 action = {
-                    "Minimum recorded repair": "minimum",
+                    "Record low-end estimate": "minimum",
                     "Choose repair amount": "custom",
-                    "Full current-spec repair": "full",
-                    "Use certified older-spec parts": "old_spec",
+                    "Record high-end current-spec estimate": "full",
+                    "Reuse older-spec parts (local ledger choice)": "old_spec",
                 }[decision]
                 try:
                     season.resolve_incident(con, incident["id"], action, selected_amount)
@@ -663,7 +663,7 @@ def render_safety_planning(con, state):
     )
     reserve = snapshot["crash_contingency"]
     first, second, third, fourth = st.columns(4)
-    first.metric("Recorded incident cases", len(snapshot["records"]))
+    first.metric("Historical incident cases", len(snapshot["historical_records"]))
     second.metric("Open repair records", len(snapshot["open_repair_records"]))
     third.metric("Open project-critical records", len(snapshot["open_critical_records"]))
     fourth.metric("Crash cover remaining", money(reserve["remaining"]))
@@ -683,12 +683,12 @@ def render_safety_planning(con, state):
         )
 
     st.markdown("#### Historical incident evidence")
-    records = snapshot["records"]
-    if not records:
+    historical_records = snapshot["historical_records"]
+    if not historical_records:
         st.info("No selected-team incident case has been revealed in this replay yet.")
     else:
         evidence_rows = []
-        for record in records:
+        for record in historical_records:
             low = float(record.get("cost_low") or 0)
             high = float(record.get("cost_high") or 0)
             estimate = (
@@ -715,6 +715,22 @@ def render_safety_planning(con, state):
         st.caption(
             "Repair bands are pre-existing local financial estimates where public damage context exists; they are not team invoices, engineering instructions, or proof of repair quality."
         )
+
+    manual_records = snapshot["manual_records"]
+    if manual_records:
+        st.markdown("#### Local manual planning entries")
+        st.caption("These are user-entered local ledger entries, not historical incident evidence.")
+        manual_rows = []
+        for record in manual_records:
+            manual_rows.append({
+                "Round": record["round_number"],
+                "Local entry": record["title"],
+                "Category": record["category"],
+                "Repair record": str(record.get("state") or "").replace("_", " ").title(),
+                "User-entered estimate": money(record.get("cost_high") or 0),
+                "Entry source": record.get("source") or "Local manual entry",
+            })
+        show_table(pd.DataFrame(manual_rows))
 
     st.markdown("#### Evidence boundary")
     left, right = st.columns(2)
