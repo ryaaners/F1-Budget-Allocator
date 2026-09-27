@@ -286,16 +286,13 @@ def render_home(con, state):
     first, second, third = st.columns(3)
     with first:
         st.metric("Replay format", "Exact 2025")
-        st.caption("No budget decision changes a historical result.")
     with second:
         st.metric("Current focus", team["name"])
-        st.caption("Team colour and actual drivers follow the selected weekend.")
     with third:
         if state:
             st.metric("Next round", f"R{state['current_round']} of 24")
         else:
             st.metric("Start point", "Pre-season")
-        st.caption("Crash contingency and cap choices remain interactive.")
     if state:
         finance = season.finance_summary(con)
         first, second, third = st.columns(3)
@@ -305,8 +302,7 @@ def render_home(con, state):
     st.button(season_label, on_click=navigate, args=("2025 Season Budget Replay",))
     st.button("Open Budget Workspace", on_click=navigate, args=("Budget Workspace",))
     st.markdown("#### 2025 calendar")
-    calendar = pd.DataFrame(CALENDAR)[["round", "name", "date", "sprint", "venue"]].rename(columns={"round": "Round", "name": "Grand Prix", "date": "Date", "sprint": "Sprint", "venue": "Circuit"})
-    calendar["Sprint"] = calendar["Sprint"].map(lambda value: "Sprint" if value else "")
+    calendar = pd.DataFrame(CALENDAR)[["round", "name", "date", "venue"]].rename(columns={"round": "Round", "name": "Grand Prix", "date": "Date", "venue": "Circuit"})
     show_table(calendar)
 
 
