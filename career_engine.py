@@ -242,6 +242,92 @@ def spend_by_category(con):
     return output
 
 
+def readiness_score(con, simulated_category=None, simulated_amount=0.0):
+    """Return the single, shared 0–100 planning readiness score.
+
+    It measures funded preparation and component coverage only.  The score is
+    deliberately isolated from the immutable historical race classifications.
+    Passing a category and amount evaluates a proposed commitment without
+    writing it to the ledger.
+    """
+    commitments = spend_by_category(con)
+    if simulated_category in CATEGORIES:
+        commitments[simulated_category] += max(0.0, float(simulated_amount))
+    weights = {
+        "Aero": 12, "Powertrain": 13, "Chassis / structures": 16,
+        "Personnel": 15, "Operations": 16, "Testing": 15, "Other": 5,
+    }
+    score = 35.0
+    for category, weight in weights.items():
+        score += weight * (1 - pow(2.718281828, -commitments[category] / 7_000_000.0))
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+def category_budget_status(con, category, extra_amount=0.0):
+    """Return the analytical category envelope and remaining amount for advice."""
+    committed = spend_by_category(con).get(category, 0.0)
+    try:
+        row = con.execute("SELECT cap_allocation FROM categories WHERE name = ?", (category,)).fetchone()
+    except sqlite3.OperationalError:
+        row = None
+    allocation = float(row["cap_allocation"]) if row else CAP / len(CATEGORIES)
+    remaining = allocation - committed - max(0.0, float(extra_amount))
+    return {"allocation": allocation, "committed": committed, "remaining": remaining}
+
+
+def weather_advisory(con):
+    """Build a pre-weekend advisory from locally bundled, observed weather data."""
+    state = active_state(con)
+    if not state or state["status"] != "active":
+        return None
+    round_number = int(state["current_round"])
+    primary = historical_weather(round_number).get("primary")
+    if not primary:
+        return None
+    meteo = primary.get("open_meteo") or {}
+    precipitation = meteo.get("precipitation_mm_in_window")
+    wind = (primary.get("wind_speed_kph") or {}).get("mean")
+    air = (primary.get("air_temperature_c") or {}).get("max")
+    condition = None
+    if bool(primary.get("rainfall_observed")) or (precipitation is not None and float(precipitation) >= 5.0):
+        raw = "OpenF1 rain observed" if primary.get("rainfall_observed") else f"{float(precipitation):.1f} mm expected"
+        condition = ("Rain", raw, "Aero", 2_000_000.0,
+                     "Wet-weather setups rely heavily on downforce tuning for grip and visibility in spray. Underfunded Aero has historically correlated with reduced wet-race stability.")
+    elif wind is not None and float(wind) >= 35.0:
+        condition = ("High wind", f"{float(wind):.1f} km/h sustained wind", "Chassis / structures", 1_750_000.0,
+                     "Structural stability directly affects handling consistency in high-crosswind conditions.")
+    elif air is not None and float(air) >= 32.0:
+        condition = ("Extreme heat", f"{float(air):.1f}°C air temperature", "Powertrain", 2_250_000.0,
+                     "Engine and brake components face higher thermal load, raising failure risk over race distance.")
+    if not condition:
+        return None
+    label, raw_value, category, suggested_amount, rationale = condition
+    current = readiness_score(con)
+    projected = readiness_score(con, category, suggested_amount)
+    finance = breach_preview(con, suggested_amount)
+    category_budget = category_budget_status(con, category, suggested_amount)
+    return {
+        "round": round_number, "round_name": CALENDAR[round_number - 1]["name"],
+        "condition": label, "raw_value": raw_value, "category": category,
+        "suggested_amount": suggested_amount, "rationale": rationale,
+        "current_score": current, "projected_score": projected,
+        "point_delta": round(projected - current, 1),
+        "percent_delta": round((projected - current) / current * 100, 1) if current else 0.0,
+        "remaining_category_budget": category_budget["remaining"],
+        "remaining_cap_headroom": finance["remaining"],
+    }
+
+
+def preference(con, key):
+    row = con.execute("SELECT value FROM career_preferences WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_preference(con, key, value):
+    con.execute("INSERT OR REPLACE INTO career_preferences(key, value) VALUES (?,?)", (key, str(value)))
+    con.commit()
+
+
 def sanction_for(spend):
     breach = max(0.0, float(spend) - CAP)
     breach_pct = breach / CAP if CAP else 0.0
@@ -398,8 +484,7 @@ def _record_historical_incidents(con, state, round_number):
         ).fetchone()
         if exists:
             continue
-        low = max(0.0, float(event.get("cost_low_cad", 0) or 0))
-        high = max(low, float(event.get("cost_high_cad", low) or low))
+        low, high, estimate_label = _repair_estimate(event)
         con.execute(
             """INSERT INTO career_incidents
             (round_number,title,amount,category,penalty,state,reason,responsible,source,created_at,
@@ -413,10 +498,66 @@ def _record_historical_incidents(con, state, round_number):
                 event.get("source", "Historical 2025 incident bundle"), date.today().isoformat(),
                 event.get("session", "Grand Prix"), event.get("driver_id"), event.get("kind", "incident"),
                 ", ".join(event.get("components") or ["Damage components not publicly confirmed"]),
-                low, high, event.get("estimate_label", "No repair cost established"),
+                low, high, estimate_label,
                 int(bool(event.get("safety_critical", False))), int(bool(event.get("repair_required", False))),
                 0.0, event.get("source_url", event.get("source", "")),
             ),
+        )
+
+
+def _repair_estimate(event):
+    """Return a conservative local repair band for a recorded physical incident.
+
+    Public sources establish the incident, but teams do not publish repair invoices.
+    When a physical crash has no public estimate, the replay supplies a clearly
+    labelled component-based planning range so it can still be funded.
+    """
+    low = max(0.0, float(event.get("cost_low_cad", 0) or 0))
+    high = max(low, float(event.get("cost_high_cad", low) or low))
+    label = event.get("estimate_label") or "Public estimate; not a team invoice."
+    if high > 0 or not bool(event.get("repair_required")):
+        return low, high, label
+
+    text = " ".join([
+        str(event.get("title", "")), str(event.get("reason", "")),
+        " ".join(event.get("components") or []),
+    ]).lower()
+    # These bands cover component replacement and labour only. They deliberately
+    # stay below speculative multi-car, season-ending damage figures.
+    if any(term in text for term in ("barrier", "wall", "heavy", "rollover")):
+        low, high = 550_000.0, 1_450_000.0
+    elif any(term in text for term in ("suspension", "gearbox", "chassis", "floor")):
+        low, high = 400_000.0, 1_050_000.0
+    elif any(term in text for term in ("contact", "collision", "wing", "bodywork")):
+        low, high = 250_000.0, 750_000.0
+    else:
+        low, high = 300_000.0, 900_000.0
+    return low, high, "Local component-based repair planning estimate; incident facts are sourced, costs are not a team invoice."
+
+def refresh_repair_estimates(con):
+    """Fill missing bands in existing pending physical-incident records."""
+    state = active_state(con)
+    if not state:
+        return
+    events = {
+        (int(event.get("round", 0)), event.get("title")): event
+        for round_number in range(1, len(CALENDAR) + 1)
+        for event in incidents_for(state["team_id"], round_number)
+    }
+    rows = con.execute(
+        """SELECT id, round_number, title, cost_high FROM career_incidents
+        WHERE repair_required = 1 AND state IN ('pending', 'deferred')"""
+    ).fetchall()
+    for row in rows:
+        if float(row["cost_high"] or 0) > 0:
+            continue
+        event = events.get((int(row["round_number"]), row["title"]))
+        if not event:
+            continue
+        low, high, label = _repair_estimate(event)
+        con.execute(
+            "UPDATE career_incidents SET amount = ?, cost_low = ?, cost_high = ?, estimate_label = ? WHERE id = ?",
+            (low, low, high, label, row["id"]),
         )
 
 

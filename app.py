@@ -34,9 +34,11 @@ def db():
                 entries.append((category, DEFAULT_ALLOC[category] * 1e6 * DEFAULT_FACTORS[category] * share, date.today().isoformat(), quarter, "Synthetic starter data"))
         con.executemany("INSERT INTO spend_entries(category, amount, entry_date, race_weekend, note) VALUES (?,?,?,?,?)", entries)
     season.migrate(con)
+    season.refresh_repair_estimates(con)
     # This preserves an existing budget ledger while replacing legacy synthetic
     # classifications with sourced 2025 replay data through its current round.
     season.rebase_active_replay(con)
+    season.refresh_repair_estimates(con)
     con.commit()
     return con
 
@@ -118,6 +120,54 @@ def budget_gain(rate, spend):
     return rate * (1 - np.exp(-max(0.0, spend) / 6_000_000.0))
 
 
+def render_replay_upgrade_impact(con, category, proposed_amount):
+    """Show a planning-only package curve without changing recorded results."""
+    prior = pd.DataFrame(season.ledger(con))
+    current = 0.0
+    if not prior.empty:
+        current = float(prior.loc[
+            (prior["kind"].isin(["preseason_rnd", "upgrade"])) & (prior["category"] == category), "amount"
+        ].sum())
+    proposed = max(0.0, float(proposed_amount))
+    ceiling = max(10_000_000.0, current + proposed * 1.5, current * 1.25)
+    spend = np.linspace(0, ceiling, 60)
+    performance_ceiling = {
+        "Aero": .30, "Powertrain": .19, "Chassis / structures": .16,
+    }
+    safety_ceiling = {
+        "Personnel": 32, "Operations": 36, "Testing": 28, "Other": 14,
+    }
+    is_performance = category in performance_ceiling
+    ceiling_value = performance_ceiling[category] if is_performance else safety_ceiling[category]
+    y_axis = "Potential delta time saved (s)" if is_performance else "Safety & readiness rating increase"
+    def impact(value):
+        return ceiling_value * (1 - np.exp(-value / 6_000_000))
+
+    curve = pd.DataFrame({"Package commitment (CAD $M)": spend / 1_000_000})
+    curve[y_axis] = impact(spend)
+    figure = px.line(
+        curve, x="Package commitment (CAD $M)", y=y_axis,
+        title=f"Potential {category} package impact",
+        color_discrete_sequence=["#E10600"],
+    )
+    points = pd.DataFrame({
+        "Package commitment (CAD $M)": [current / 1_000_000, (current + proposed) / 1_000_000],
+        y_axis: [impact(current), impact(current + proposed)],
+        "Label": ["Committed", "With proposed package"],
+    })
+    figure.add_scatter(
+        x=points["Package commitment (CAD $M)"], y=points[y_axis],
+        mode="markers+text", text=points["Label"], textposition="top center", name="Your plan",
+        marker=dict(size=10, color="#F5F5F5"),
+    )
+    figure.update_layout(height=330, margin=dict(l=0, r=0, t=48, b=0), showlegend=False)
+    show_chart(figure)
+    if is_performance:
+        st.caption("Illustrative development potential only. The recorded 2025 classification, gaps, points, and standings remain unchanged.")
+    else:
+        st.caption("A safety and operational-readiness planning rating. It is used for budget planning only and does not change the recorded 2025 replay.")
+
+
 def livery_css(primary, secondary, mode):
     accent = primary if mode == "team" else "#E10600"
     accent_two = secondary if mode == "team" else "#F5F5F5"
@@ -134,6 +184,10 @@ def livery_css(primary, secondary, mode):
     [data-testid="stSidebar"] {{background:#0E1117;}}
     .finish-line {{height:10px;margin:.4rem 0 1.35rem;background-color:var(--team-primary);background-image:conic-gradient(from 90deg at 1px 1px,#fff 90deg,transparent 0);background-size:18px 18px;}}
     .team-panel,.session-panel {{background:linear-gradient(120deg,rgba(255,255,255,.065),rgba(0,0,0,.18));border-left:4px solid var(--team-primary);padding:1rem 1.2rem;margin:.5rem 0 1rem;}}
+    .repair-summary {{background:rgba(18,23,33,.94);border-left:3px solid var(--team-primary);padding:.8rem 1rem;margin:.5rem 0;color:var(--ink);}}
+    .repair-summary strong,.repair-summary span {{color:var(--ink);}}
+    .weather-advisory {{background:linear-gradient(120deg,rgba(86,53,14,.92),rgba(18,23,33,.97));border:1px solid #D9A441;border-left:5px solid #F5C451;padding:1.15rem 1.3rem;margin:1rem 0;color:var(--ink);}}
+    .weather-advisory h3,.weather-advisory p {{color:var(--ink);margin:.2rem 0;}}
     .team-panel h2 {{white-space:nowrap;font-size:clamp(1.2rem,2vw,2rem);}}
     .telemetry-label {{color:var(--muted);text-transform:uppercase;letter-spacing:.09em;font-size:.74rem;}}
     .portrait-card {{text-align:center;background:rgba(12,16,22,.88);padding:.75rem;border-bottom:2px solid var(--team-secondary);min-height:145px;}}
@@ -282,7 +336,7 @@ def render_setup(con):
     preview["discretionary_remaining"] = CAP - committed - crash_reserve
     render_breach_preview(preview, "Pre-season preview")
     switch_round = st.slider("Future-car switch round", 1, 24, 16, help="After this round, Aero, Powertrain, Chassis and Testing commitments are labelled as future-car funding. They do not change the 2025 replay.")
-    if st.button("Begin exact 2025 replay"):
+    if st.button("Begin 2025 replay"):
         season.create_career(con, selected_id, allocation, crash_reserve, switch_round=switch_round, theme="team")
         rerun_app()
 
@@ -294,7 +348,7 @@ def render_incident_decisions(con):
     state = season.active_state(con)
     team = TEAMS[state["team_id"]]
     st.markdown("#### Race operations alerts")
-    st.warning("These are historical 2025 event records for your selected team. Repair choices change the budget ledger, not the replayed classification.")
+    st.warning("These are historical 2025 event records for your selected team. Repair choices change the budget ledger.")
     for incident in incidents:
         title = f"{incident.get('session_name') or 'Weekend'} · {incident['title']}"
         with st.expander(title, expanded=incident["state"] == "pending"):
@@ -322,26 +376,44 @@ def render_incident_decisions(con):
                     st.error("Safety-critical damage: a safe repair status must be recorded before the next race. The public record does not support a cost estimate.")
                     action_label, action = "Confirm minimum safe repair status", "minimum"
                 else:
-                    st.info("A repair was required, but public sources do not support a cost range. Record it without a fabricated invoice.")
+                    st.info("A repair is required.")
                     action_label, action = "Record source limitation", "review"
                 if st.button(action_label, key=f"limit_{incident['id']}"):
                     season.resolve_incident(con, incident["id"], action)
                     rerun_app()
                 continue
-            st.metric("Estimated repair range", f"CAD ${low:,.0f} – CAD ${high:,.0f}")
+            reserve = season.crash_contingency(con)
+            st.markdown(
+                f"<div class='repair-summary'><strong>Estimated repair band</strong><br>"
+                f"CAD ${low:,.0f} to CAD ${high:,.0f}<br>"
+                f"<span>Crash cover remaining: {money(reserve['remaining'])}</span></div>",
+                unsafe_allow_html=True,
+            )
             st.caption(incident.get("estimate_label") or "Public estimate; not a team invoice.")
-            options = ["Minimum safe repair", "Choose repair amount", "Full current-spec repair"]
+            st.caption("Choose the depth of repair. The recorded 2025 result remains unchanged; this affects only repair cover and the financial audit.")
+            options = ["Minimum safe repair", "Balanced repair", "Full current-spec repair", "Choose repair amount"]
             if not bool(incident.get("safety_critical")):
                 options.append("Use certified older-spec parts")
             else:
                 st.error("Safety-critical damage: at least the minimum safe repair is required.")
             decision = st.radio("Repair plan", options, key=f"decision_{incident['id']}")
             selected_amount = None
-            if decision == "Choose repair amount":
+            if decision == "Balanced repair":
+                selected_amount = (low + high) / 2
+                st.markdown(f"<div class='repair-summary'><strong>Selected repair cost</strong><br>{money(selected_amount)} · Balanced current-spec repair</div>", unsafe_allow_html=True)
+            elif decision == "Choose repair amount":
                 selected_amount = st.number_input("Repair amount (CAD)", min_value=low, max_value=high, value=(low + high) / 2, step=max(1_000.0, (high - low) / 20), key=f"amount_{incident['id']}")
+                st.markdown(f"<div class='repair-summary'><strong>Selected repair cost</strong><br>{money(selected_amount)} · Custom repair amount</div>", unsafe_allow_html=True)
+            elif decision == "Minimum safe repair":
+                st.markdown(f"<div class='repair-summary'><strong>Selected repair cost</strong><br>{money(low)} · Minimum safe repair</div>", unsafe_allow_html=True)
+            elif decision == "Full current-spec repair":
+                st.markdown(f"<div class='repair-summary'><strong>Selected repair cost</strong><br>{money(high)} · Full current-spec repair</div>", unsafe_allow_html=True)
+            else:
+                st.markdown("<div class='repair-summary'><strong>Selected repair cost</strong><br>CAD $0.0M · Certified older-spec components</div>", unsafe_allow_html=True)
             if st.button("Record repair decision", key=f"repair_{incident['id']}"):
                 action = {
                     "Minimum safe repair": "minimum",
+                    "Balanced repair": "custom",
                     "Choose repair amount": "custom",
                     "Full current-spec repair": "full",
                     "Use certified older-spec parts": "old_spec",
@@ -358,6 +430,17 @@ def dataframe_results(results, session_name):
     if frame.empty:
         st.info("No classification is available yet.")
         return
+    # Results feeds use both NC and PNC for a non-classified retirement.  DNF is
+    # clearer in Race Control while the historical status stays in the data bundle.
+    frame = frame.copy()
+    status = frame.get("status", pd.Series("", index=frame.index)).fillna("").astype(str).str.upper()
+    position = frame.get("position_display", pd.Series("", index=frame.index)).fillna("").astype(str).str.upper()
+    dnf = status.isin(["RETIRED", "WITHDRAWN", "DID NOT START", "NOT CLASSIFIED"]) | position.isin(["NC", "PNC"])
+    if dnf.any():
+        frame.loc[dnf, "position_display"] = "DNF"
+        for column in ("time_display", "gap_display"):
+            if column in frame:
+                frame.loc[dnf, column] = "DNF"
     qualifying = "Qualifying" in session_name
     if qualifying:
         stage_columns = [column for column in ("sq1", "sq2", "sq3") if column in frame and frame[column].notna().any()]
@@ -392,10 +475,78 @@ def render_weekend_classification(records, team_id, heading):
             for column, row in zip(columns, selected_rows):
                 with column:
                     show_portrait({"id": row["driver_id"], "name": row["driver"]}, team, 52)
-                    st.caption(f"{row['driver']} · P{row.get('position_display', row.get('position', ''))}")
+                    raw_position = str(row.get("position_display", row.get("position", ""))).upper()
+                    raw_status = str(row.get("status", "")).upper()
+                    position = "DNF" if raw_position in {"NC", "PNC"} or raw_status in {"RETIRED", "WITHDRAWN", "DID NOT START", "NOT CLASSIFIED"} else f"P{raw_position}"
+                    st.caption(f"{row['driver']} · {position}")
         for note in record.get("notes") or []:
             st.caption(f"Official note: {note}")
         st.caption(f"Source: {record.get('source', 'Local 2025 historical replay bundle')}")
+
+
+def render_weather_advisory(con):
+    """Render one actionable weather advisory before the next weekend is replayed."""
+    advisory = season.weather_advisory(con)
+    if not advisory:
+        return
+    preference_key = f"weather_advisory_round_{advisory['round']}"
+    if season.preference(con, preference_key):
+        return
+
+    st.markdown(
+        f"<div class='weather-advisory'><h3>⚠️ Weather Advisory — Next Round: {advisory['round_name']}</h3>"
+        f"<p><strong>{advisory['condition']}</strong> is forecast for this weekend ({advisory['raw_value']}).</p></div>",
+        unsafe_allow_html=True,
+    )
+    current, projected = st.columns(2)
+    current.metric("Current readiness score", f"{advisory['current_score']:.0f}%")
+    projected.metric("Suggested readiness", f"{advisory['projected_score']:.0f}%", f"+{advisory['point_delta']:.1f} pts · +{advisory['percent_delta']:.1f}%")
+    st.markdown(f"**Suggested action:** Allocate {money(advisory['suggested_amount'])} to {advisory['category']}")
+    st.markdown(f"**Why:** {advisory['rationale']}")
+    st.caption(
+        f"Remaining {advisory['category']} budget if allocated: {money(advisory['remaining_category_budget'])} · "
+        f"Remaining total cap headroom: {money(advisory['remaining_cap_headroom'])}"
+    )
+
+    state_key = f"weather_advisory_custom_{advisory['round']}"
+    suggested, decline, custom = st.columns(3)
+    if suggested.button(f"Allocate {money(advisory['suggested_amount'])} to {advisory['category']}", key=f"weather_accept_{advisory['round']}"):
+        season.commit_investment(con, advisory["category"], advisory["suggested_amount"], f"Weather advisory · {advisory['condition']}")
+        season.set_preference(con, preference_key, "accepted")
+        rerun_app()
+    if decline.button("Decline", key=f"weather_decline_{advisory['round']}"):
+        season.set_preference(con, preference_key, "declined")
+        rerun_app()
+    if custom.button("Custom Amount", key=f"weather_custom_{advisory['round']}"):
+        st.session_state[state_key] = True
+        rerun_app()
+
+    if st.session_state.get(state_key):
+        custom_amount = st.number_input(
+            f"Custom {advisory['category']} amount (CAD)", min_value=0.0,
+            value=float(advisory["suggested_amount"]), step=100_000.0,
+            key=f"weather_custom_amount_{advisory['round']}",
+        )
+        current_score = season.readiness_score(con)
+        projected_score = season.readiness_score(con, advisory["category"], custom_amount)
+        category_status = season.category_budget_status(con, advisory["category"], custom_amount)
+        preview = season.breach_preview(con, custom_amount)
+        st.info(
+            f"Projected readiness: {current_score:.0f}% → {projected_score:.0f}% "
+            f"(+{projected_score - current_score:.1f} points)."
+        )
+        st.caption(
+            f"Remaining {advisory['category']} budget: {money(category_status['remaining'])} · "
+            f"Total cap headroom: {money(preview['remaining'])}"
+        )
+        if st.button("Confirm custom weather allocation", key=f"weather_confirm_custom_{advisory['round']}"):
+            if custom_amount <= 0:
+                st.error("Enter a positive CAD amount or decline the advisory.")
+            else:
+                season.commit_investment(con, advisory["category"], custom_amount, f"Weather advisory · {advisory['condition']} · custom amount")
+                season.set_preference(con, preference_key, "accepted")
+                st.session_state.pop(state_key, None)
+                rerun_app()
 
 
 def render_race_control(con, state):
@@ -427,6 +578,7 @@ def render_race_control(con, state):
         "discretionary_remaining": finance["discretionary_remaining"],
         "sanction": finance["sanction"],
     })
+    render_weather_advisory(con)
     render_incident_decisions(con)
     st.markdown("#### Pre-race capital decision")
     first, second, third = st.columns(3)
@@ -437,6 +589,8 @@ def render_race_control(con, state):
     st.caption(f"This commitment is labelled as **{target}**. It will not change the historical 2025 classification.")
     if amount > 0:
         render_breach_preview(season.breach_preview(con, amount * 1_000_000), "Package preview")
+    with st.expander("Potential upgrade impact", expanded=False):
+        render_replay_upgrade_impact(con, category, amount * 1_000_000)
     if st.button("Commit package", key="commit_race_package") and amount > 0:
         season.commit_investment(con, category, amount * 1_000_000, note)
         rerun_app()
@@ -511,15 +665,18 @@ def render_history_weather(con, state):
         if not primary:
             st.info("Historical weather was not available from the local source bundle for this race session.")
         else:
-            first, second, third = st.columns(3)
-            first.metric("Air", range_text(primary.get("air_temperature_c"), "°C"))
-            second.metric("Track", range_text(primary.get("track_temperature_c"), "°C"))
-            third.metric("Wind", range_text(primary.get("wind_speed_kph"), " km/h"))
+            meteo = primary.get("open_meteo") or {}
+            condition = meteo.get("weather_text_at_window_start") or (
+                "Rain observed" if primary.get("rainfall_observed") else "No rain observed"
+            )
+            st.metric("Air temperature", range_text(primary.get("air_temperature_c"), "°C"))
+            st.metric("Track temperature", range_text(primary.get("track_temperature_c"), "°C"))
+            st.metric("Wind speed", range_text(primary.get("wind_speed_kph"), " km/h"))
+            st.metric("Track condition", condition)
             st.info(
                 f"OpenF1 {primary['session']} samples: "
                 + ("rain observed." if primary.get("rainfall_observed") else "no rain sample recorded.")
             )
-            meteo = primary.get("open_meteo") or {}
             if meteo.get("available"):
                 precipitation = meteo.get("precipitation_mm_in_window")
                 if precipitation is not None:
@@ -538,9 +695,9 @@ def render_history_weather(con, state):
                         "wind_speed_mps": "Wind (m/s)", "rainfall_observed": "Rain observed",
                     })
                     show_table(sample_frame)
-        sprint_weather = [item for item in weather.get("sessions", []) if item.get("session") == "Sprint"]
-        for item in sprint_weather:
-            with st.expander("Sprint-session weather"):
+        additional_weather = [item for item in weather.get("sessions", []) if item is not primary]
+        for item in additional_weather:
+            with st.expander(f"{item.get('session', 'Additional')} session weather"):
                 st.write(
                     f"Air: {range_text(item.get('air_temperature_c'), '°C')} · "
                     f"Track: {range_text(item.get('track_temperature_c'), '°C')} · "

@@ -203,15 +203,22 @@ def _weather_summary(session_name, raw_weather, round_weather):
     """Normalise a source record for display without estimating missing fields."""
     raw_weather = raw_weather or {}
     meteo = (round_weather or {}).get("open_meteo", {}) if session_name == "Grand Prix" else {}
-    wind = raw_weather.get("wind_speed_mps") or {}
+    def source_range(value):
+        if isinstance(value, dict):
+            return value
+        if value is None:
+            return {}
+        return {"min": value, "max": value, "mean": value}
+
+    wind = source_range(raw_weather.get("wind_speed_mps"))
     return {
         "session": session_name,
         "available": bool(raw_weather.get("available")),
         "source_url": raw_weather.get("source_url"),
         "sample_count": raw_weather.get("sample_count"),
-        "air_temperature_c": raw_weather.get("air_temperature_c"),
-        "track_temperature_c": raw_weather.get("track_temperature_c"),
-        "humidity_percent": raw_weather.get("humidity_percent"),
+        "air_temperature_c": source_range(raw_weather.get("air_temperature_c")),
+        "track_temperature_c": source_range(raw_weather.get("track_temperature_c")),
+        "humidity_percent": source_range(raw_weather.get("humidity_percent")),
         "wind_speed_kph": {
             key: (value * 3.6 if value is not None else None)
             for key, value in wind.items()
@@ -227,9 +234,11 @@ def historical_weather(round_number):
     record = weekend_context(round_number)
     round_weather = record.get("weather", {})
     summaries = []
-    for session_name in ("Sprint", "Grand Prix"):
-        session = record.get("sessions", {}).get(session_name, {})
+    for session_name, session in record.get("sessions", {}).items():
         weather = session.get("weather")
+        # Older context rows keep the Grand Prix observation at round level.
+        if not weather and session_name == "Grand Prix":
+            weather = round_weather.get("openf1")
         if weather:
             summaries.append(_weather_summary(session_name, weather, round_weather))
     primary = next((item for item in summaries if item["session"] == "Grand Prix"), summaries[0] if summaries else None)
