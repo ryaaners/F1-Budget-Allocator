@@ -211,7 +211,7 @@ def render_breach_preview(preview, label="Budget status"):
             st.success(f"{label}: {money(preview['remaining'])} remains inside the CAD $215M gameplay cap.")
     else:
         st.warning(
-            f"{label}: {money(preview['over_cap'])} over cap. {sanction['label']} at audit: "
+            f"{label}: {money(preview['over_cap'])} over cap. {sanction['label']} at the illustrative gameplay audit: "
             f"{money(sanction['fine'])} fine, {sanction['wind_tunnel_cut']}% 2026 aero allowance reduction"
             + (f", and {sanction['point_deduction']} audit-only constructor points withheld." if sanction["point_deduction"] else ".")
         )
@@ -222,9 +222,9 @@ def render_home(con, state):
     season_label = "Continue exact replay" if state else "Start exact replay"
     st.markdown(
         f"""<section class='home-hero'>
-        <div class='home-kicker'>FIA-style finance desk · local historical replay</div>
+        <div class='home-kicker'>FIA-inspired finance desk · local historical replay</div>
         <div class='home-title'>F1 Budget<br>Operations</div>
-        <p class='home-copy'>Manage capital, crash contingency, repair decisions and cost-cap exposure while the 2025 timing record remains exactly as it happened.</p>
+        <p class='home-copy'>Manage capital, crash contingency, repair decisions and cost-cap exposure while the 2025 timing record remains exactly as recorded.</p>
         <span class='status-chip'>24 rounds</span><span class='status-chip'>60 sessions</span><span class='status-chip'>CAD $215M gameplay cap</span>
         </section>""",
         unsafe_allow_html=True,
@@ -260,7 +260,7 @@ def render_setup(con):
     st.title("2025 F1 Season Budget Replay")
     st.markdown("<div class='finish-line'></div>", unsafe_allow_html=True)
     st.subheader("Pre-season command desk")
-    st.caption("Classifications replay the recorded 2025 season. Financial decisions change cash exposure and the audit only.")
+    st.caption("Classifications replay the recorded 2025 season. Financial decisions change the local ledger and illustrative audit only; historical results stay locked.")
     selected_id = st.selectbox("Select your constructor", list(TEAMS), format_func=lambda key: TEAMS[key]["name"])
     team = TEAMS[selected_id]
     display_team_dossier(selected_id)
@@ -293,8 +293,9 @@ def render_incident_decisions(con):
         return
     state = season.active_state(con)
     team = TEAMS[state["team_id"]]
-    st.markdown("#### Race operations alerts")
+    st.markdown("#### Historical repair planning")
     st.warning("These are historical 2025 event records for your selected team. Repair choices change the budget ledger, not the replayed classification.")
+    st.caption("This records a local finance-planning decision from a historical incident. It is not an engineering repair instruction, vehicle-safety certification, or FIA decision.")
     for incident in incidents:
         title = f"{incident.get('session_name') or 'Weekend'} · {incident['title']}"
         with st.expander(title, expanded=incident["state"] == "pending"):
@@ -319,8 +320,8 @@ def render_incident_decisions(con):
             low, high = float(incident.get("cost_low", 0)), float(incident.get("cost_high", 0))
             if high <= 0:
                 if bool(incident.get("safety_critical")):
-                    st.error("Safety-critical damage: a safe repair status must be recorded before the next race. The public record does not support a cost estimate.")
-                    action_label, action = "Confirm minimum safe repair status", "minimum"
+                    st.error("Project critical-repair flag: the replay needs a repair decision before the next race. The public record does not support a cost estimate.")
+                    action_label, action = "Record project repair status", "minimum"
                 else:
                     st.info("A repair was required, but public sources do not support a cost range. Record it without a fabricated invoice.")
                     action_label, action = "Record source limitation", "review"
@@ -328,20 +329,20 @@ def render_incident_decisions(con):
                     season.resolve_incident(con, incident["id"], action)
                     rerun_app()
                 continue
-            st.metric("Estimated repair range", f"CAD ${low:,.0f} – CAD ${high:,.0f}")
+            st.metric("Local repair estimate range", f"CAD ${low:,.0f} – CAD ${high:,.0f}")
             st.caption(incident.get("estimate_label") or "Public estimate; not a team invoice.")
-            options = ["Minimum safe repair", "Choose repair amount", "Full current-spec repair"]
+            options = ["Minimum recorded repair", "Choose repair amount", "Full current-spec repair"]
             if not bool(incident.get("safety_critical")):
                 options.append("Use certified older-spec parts")
             else:
-                st.error("Safety-critical damage: at least the minimum safe repair is required.")
+                st.error("Project critical-repair flag: the replay requires at least its minimum repair record. This is not a vehicle release decision.")
             decision = st.radio("Repair plan", options, key=f"decision_{incident['id']}")
             selected_amount = None
             if decision == "Choose repair amount":
                 selected_amount = st.number_input("Repair amount (CAD)", min_value=low, max_value=high, value=(low + high) / 2, step=max(1_000.0, (high - low) / 20), key=f"amount_{incident['id']}")
             if st.button("Record repair decision", key=f"repair_{incident['id']}"):
                 action = {
-                    "Minimum safe repair": "minimum",
+                    "Minimum recorded repair": "minimum",
                     "Choose repair amount": "custom",
                     "Full current-spec repair": "full",
                     "Use certified older-spec parts": "old_spec",
@@ -646,11 +647,105 @@ def render_season_ledger(con, state):
                 rerun_app()
 
 
+def render_safety_planning(con, state):
+    """Show the evidence available for the next safety-planning phase.
+
+    This deliberately remains a record-and-boundary view until source data or
+    user-approved prototype assumptions can support a real planning model.
+    """
+    snapshot = season.safety_planning_snapshot(con)
+    if not snapshot:
+        st.info("Start an exact replay to view its historical incident evidence.")
+        return
+    st.subheader("Safety planning foundation")
+    st.caption(
+        "Historical records remain locked. This screen does not issue a safety release, prescribe a repair, or change a 2025 result."
+    )
+    reserve = snapshot["crash_contingency"]
+    first, second, third, fourth = st.columns(4)
+    first.metric("Recorded incident cases", len(snapshot["records"]))
+    second.metric("Open repair records", len(snapshot["open_repair_records"]))
+    third.metric("Open project-critical records", len(snapshot["open_critical_records"]))
+    fourth.metric("Crash cover remaining", money(reserve["remaining"]))
+
+    held_records = snapshot["replay_hold_incidents"]
+    if held_records:
+        names = ", ".join(item["title"] for item in held_records)
+        st.warning(
+            "Replay advance held: a project-critical repair record remains unresolved. "
+            f"Record the required local repair decision in Race control before advancing: {names}. "
+            "This is a replay workflow gate, not a safe-to-race assessment."
+        )
+    else:
+        st.info(
+            "No prior project-critical repair record is holding the replay advance. "
+            "This does not establish vehicle readiness or authorise a car release."
+        )
+
+    st.markdown("#### Historical incident evidence")
+    records = snapshot["records"]
+    if not records:
+        st.info("No selected-team incident case has been revealed in this replay yet.")
+    else:
+        evidence_rows = []
+        for record in records:
+            low = float(record.get("cost_low") or 0)
+            high = float(record.get("cost_high") or 0)
+            estimate = (
+                f"CAD ${low:,.0f} – CAD ${high:,.0f} (local estimate)"
+                if high > 0 else "Not established by the public record"
+            )
+            evidence_rows.append({
+                "Round": record["round_number"],
+                "Historical record": record["title"],
+                "Damage area": record.get("components") or "Not publicly confirmed",
+                "Project critical-repair flag": "Yes" if record.get("safety_critical") else "",
+                "Repair record": str(record.get("state") or "").replace("_", " ").title(),
+                "Pre-existing repair band": estimate,
+                "Source link": "Available" if str(record.get("source_url") or "").startswith(("https://", "http://")) else "Not recorded",
+            })
+        show_table(pd.DataFrame(evidence_rows))
+        linked_records = snapshot["source_linked_records"]
+        if linked_records:
+            with st.expander("Open historical source records"):
+                for record in linked_records:
+                    st.markdown(
+                        f"[Round {record['round_number']} · {record['title']}]({record['source_url']})"
+                    )
+        st.caption(
+            "Repair bands are pre-existing local financial estimates where public damage context exists; they are not team invoices, engineering instructions, or proof of repair quality."
+        )
+
+    st.markdown("#### Evidence boundary")
+    left, right = st.columns(2)
+    with left:
+        st.markdown(
+            """**Available in the local historical record**
+
+- Incident description, event/session, driver, and damaged-area summary where public reporting provides them.
+- Source links where the bundled record includes one.
+- A project critical-repair flag, repair-record status, and the existing crash-contingency ledger.
+"""
+        )
+    with right:
+        st.markdown(
+            """**Not yet modelled**
+
+- Verified spare inventory or component condition.
+- Repair duration, staffing, inspection/sign-off, or release approval.
+- Risk probabilities, a readiness score, predicted incidents, or a safe-to-race outcome.
+"""
+        )
+    readiness_model = snapshot["readiness_model"]
+    st.info(f"Readiness outcome unavailable: {readiness_model['reason']}")
+    st.caption("Use Race control to record the existing local repair-finance decision. A later, separate phase can add editable, clearly labelled prototype assumptions after data review.")
+
+
 def render_audit(con):
     audit = season.audit(con)
     team = audit["team"]
     summary, sanction = audit["summary"], audit["sanction"]
-    st.title("The FIA & Board Audit")
+    st.title("Board Audit & FIA-Inspired Review")
     st.markdown("<div class='finish-line'></div>", unsafe_allow_html=True)
     st.header(audit["verdict"])
     st.caption("Abu Dhabi race entrants")
@@ -659,7 +754,7 @@ def render_audit(con):
     first.metric("Historical 2025 constructor result", f"P{audit['player']['Position']} · {audit['player']['Points']} pts")
     second.metric("Final cap spend", money(summary["spend"]))
     third.metric("Cap balance", money(summary["remaining"]))
-    st.markdown("#### Financial audit")
+    st.markdown("#### Local gameplay audit")
     a, b, c, d = st.columns(4)
     a.metric("Crash tax", money(summary["crash_tax"]))
     b.metric("Planned R&D", money(summary["planned_rnd"]))
@@ -677,18 +772,18 @@ def render_audit(con):
         f"{money(summary['crash_contingency']['remaining'])} remained unspent at the finish."
     )
     if sanction["breach"]:
-        st.warning(f"{sanction['label']}: {money(sanction['breach'])} over cap. Game consequence: {money(sanction['fine'])} fine, {sanction['wind_tunnel_cut']}% 2026 aero allowance reduction" + (f", {sanction['point_deduction']} audit-only points withheld." if sanction["point_deduction"] else "."))
+        st.warning(f"{sanction['label']}: {money(sanction['breach'])} over cap. Illustrative game outcome: {money(sanction['fine'])} fine, {sanction['wind_tunnel_cut']}% 2026 aero allowance reduction" + (f", {sanction['point_deduction']} audit-only points withheld." if sanction["point_deduction"] else "."))
         st.caption("The historical 2025 replay table is never rewritten; point withholding is shown only as a game audit consequence.")
     else:
-        st.success("Clean gameplay-cap audit. No game sanction applies.")
+        st.success("Within the local gameplay cap. No illustrative game outcome applies.")
     sanction_matrix = pd.DataFrame([
         {"Gameplay cap position": "At or below CAD $215M", "Game audit consequence": "Within gameplay cap"},
-        {"Gameplay cap position": "Up to 5% over", "Game audit consequence": "CAD $5M fine · 10% aero allowance reduction"},
+        {"Gameplay cap position": "More than CAD $215M, up to and including 5% over", "Game audit consequence": "CAD $5M fine · 10% aero allowance reduction"},
         {"Gameplay cap position": "More than 5% over", "Game audit consequence": "CAD $10M fine · 20% reduction · 10 audit-only points"},
     ])
-    st.markdown("##### Transparent game sanction matrix")
+    st.markdown("##### Illustrative gameplay outcome matrix")
     show_table(sanction_matrix)
-    st.caption("Real FIA precedent is context only: [Formula 1’s 2021 Red Bull breach report](https://www.formula1.com/en/latest/article/red-bull-enter-agreement-with-fia-over-breach-of-2021-financial-regulations.2ccVAHxnUpChqHSIDGMXmg).")
+    st.caption("This CAD $215M budget and fixed outcome matrix are local gameplay rules. They do not calculate FIA Relevant Costs, determine an FIA breach, or predict an FIA sanction. [2025 FIA Financial Regulations](https://www.fia.com/system/files/documents/2025_fia_formula_1_financial_regulations_-_issue_25_-_2025-07-31.pdf)")
     st.markdown("#### Replay integrity")
     comparison = pd.DataFrame([
         {"Measure": "Constructor position", "Recorded 2025": f"P{team['historical_rank']}", "Replay": f"P{audit['player']['Position']}"},
@@ -720,7 +815,7 @@ def render_audit(con):
         st.success("No sourced repair charge was funded during the replay.")
     if audit["best_readiness"]:
         readiness = audit["best_readiness"]
-        st.info(f"Largest safety/readiness commitment: Round {readiness['round_number']} · {readiness['category']} · {money(readiness['amount'])}. No lap-time value is calculated for historical replay funding.")
+        st.info(f"Largest operational planning commitment: Round {readiness['round_number']} · {readiness['category']} · {money(readiness['amount'])}. No safety outcome or lap-time value is calculated for historical replay funding.")
     if audit["cancelled_upgrade"]:
         cancelled = audit["cancelled_upgrade"]
         st.warning(f"Cancelled or reduced package: Round {cancelled['round_number']} · {cancelled['note']}.")
@@ -745,7 +840,7 @@ def render_simulation(con, state):
     team = TEAMS[state["team_id"]]
     st.title(f"{team['name']} · 2025 F1 Budget Replay")
     st.markdown("<div class='finish-line'></div>", unsafe_allow_html=True)
-    tabs = st.tabs(["Race control", "Telemetry", "History & weather", "Season ledger"])
+    tabs = st.tabs(["Race control", "Telemetry", "History & weather", "Season ledger", "Safety planning"])
     with tabs[0]:
         render_race_control(con, state)
     with tabs[1]:
@@ -754,6 +849,8 @@ def render_simulation(con, state):
         render_history_weather(con, state)
     with tabs[3]:
         render_season_ledger(con, state)
+    with tabs[4]:
+        render_safety_planning(con, state)
 
 
 def render_budget_overview(con):

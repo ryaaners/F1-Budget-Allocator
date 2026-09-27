@@ -104,14 +104,14 @@ the warning includes a damaged-area summary and a CAD low-to-high repair band.
 Those bands are local gameplay estimates based on public component-cost
 references; they are not team invoices, FIA figures, or official repair costs.
 
-For a repairable event, choose the minimum safe repair, a full current-spec
-repair, a custom funded amount, or certified older-spec parts where eligible.
-Safety-critical damage cannot be deferred to older-spec parts. Incidents that
-do not have a public repair estimate can be reviewed and retained in the
-ledger without inventing a cost.
+For a repairable event, choose the project's minimum repair record, a full
+current-spec repair, a custom funded amount, or certified older-spec parts
+where eligible. A project-critical repair record cannot be deferred to
+older-spec parts. Incidents that do not have a public repair estimate can be
+reviewed and retained in the ledger without inventing a cost.
 
 The **Season ledger** records an explicit **Effects** description for every
-entry. It distinguishes crash-cover allocation, repair and safety status,
+entry. It distinguishes crash-cover allocation, repair-record status,
 cap/headroom commitments, and the fact that development entries do not change
 the historical replay.
 
@@ -124,17 +124,39 @@ choices in the final audit. The game-only audit consequences are:
 | Gameplay cap position | Game audit consequence |
 | --- | --- |
 | At or below CAD $215M | Within gameplay cap |
-| More than CAD $215M, up to 5% over | CAD $5M fine and 10% next-year aerodynamic-development reduction |
+| More than CAD $215M, up to and including 5% over | CAD $5M fine and 10% next-year aerodynamic-development reduction |
 | More than 5% over | CAD $10M fine, 20% reduction, and a 10-point audit-only deduction |
 
 The audit-only deduction is never used to rewrite the exact 2025 standings.
 These rules are transparent local game mechanics, not an FIA ruling or a
 prediction of a real sanction.
 
-At Abu Dhabi, the **FIA & Board Audit** reports the verdict, spend by category,
+### FIA regulatory context
+
+The CAD $215M cap and fixed outcome table above are illustrative gameplay
+rules, not a calculation of FIA compliance. Under the
+[2025 FIA Financial Regulations](https://www.fia.com/system/files/documents/2025_fia_formula_1_financial_regulations_-_issue_25_-_2025-07-31.pdf),
+a Minor Overspend Breach is less than 5% above the FIA-defined Cost Cap in
+Relevant Costs, while a Material Overspend Breach is 5% or more. Actual
+accounting, investigations, and sanctions are case-specific. This prototype
+does not calculate Relevant Costs, determine an FIA breach, or predict an FIA
+sanction.
+
+At Abu Dhabi, the **Board Audit & FIA-Inspired Review** reports the verdict, spend by category,
 crash tax, planned investment, reserve use, cost per historic constructor
 point, breach result, and the 2026 carry-forward value. It compares the saved
 replay's constructor rank and points with the locally recorded 2025 outcome.
+
+### Safety planning foundation
+
+The **Safety planning** tab is an evidence view for the later planning phase.
+It brings together only the historical incident record, source links where
+available, project critical-repair flags, repair-record status, and the local
+crash-contingency ledger. It does not calculate a readiness score, predict
+risk, prescribe a repair, or issue a safe-to-race outcome. Verified spare
+inventory, repair durations, inspection/sign-off, and release approval are not
+included in the bundled public data and will remain unavailable until reviewed
+data or clearly labelled prototype assumptions are added separately.
 
 ## What investments do
 
@@ -184,7 +206,7 @@ SVG badges and palette information are described in [ATTRIBUTIONS.md](ATTRIBUTIO
   are historic records. See [DATA_SOURCES.md](DATA_SOURCES.md) for their local
   files, sources, and known data limitation.
 - Financial amounts, constructor cost profiles, repair ranges, reserve rules,
-  safety labels, board targets, and sanctions are local gameplay models.
+  project critical-repair flags, board targets, and sanctions are local gameplay models.
   They are not confidential FIA or team financial records.
 - Local weather, tyre-stint, pit-stop, and incident context is source-backed
   historical reference for the selected team. OpenF1 observations and

@@ -39,7 +39,8 @@ fastest lap receives no championship point.
 `data/incidents_2025.json` is a selected-team incident feed. It contains local
 records for 2025 GP and Sprint non-finishes and relevant penalty events, with
 the session, driver, factual description, responsibility where a source
-establishes it, damaged-area summary, source URL, repair band, and safety flag.
+establishes it, damaged-area summary, source URL, repair band, and project
+critical-repair flag.
 
 - The underlying result status is drawn from the historical replay bundle.
 - Formula1.com reporting is linked when public reporting provides a factual
@@ -54,6 +55,16 @@ establishes it, damaged-area summary, source URL, repair band, and safety flag.
 
 An incident with no public physical-damage basis can remain a zero-cost reviewed
 record. The app does not invent a repair amount merely to create a decision.
+
+### Safety-planning evidence boundary
+
+The first Safety planning view uses only the fields above, the recorded repair
+state, and the local crash-contingency ledger. A project critical-repair flag
+is a local replay workflow rule, not an FIA or engineering finding. The bundle
+does not contain verified spare inventory, component condition, repair duration,
+staffing, inspection/sign-off, release approval, or validated risk inputs. It
+therefore does not calculate a readiness score, recommend a repair, predict a
+failure, or authorise a car release.
 
 ## Weather and strategy reference cards
 
@@ -102,6 +113,13 @@ The CAD $215M cap, fixed operating profiles, pre-season funding, crash
 contingency allocation, repair choices, current-to-future funding labels,
 board targets, financial health indicators, and sanction bands are local
 gameplay rules.
+
+The cap and fixed outcome matrix are not FIA compliance calculations. Under the
+[2025 FIA Financial Regulations](https://www.fia.com/system/files/documents/2025_fia_formula_1_financial_regulations_-_issue_25_-_2025-07-31.pdf),
+a Minor Overspend Breach is less than 5% above the FIA-defined Cost Cap in
+Relevant Costs and a Material Overspend Breach is 5% or more. The application
+does not calculate Relevant Costs, determine an FIA breach, or predict an FIA
+sanction.
 
 The crash contingency is a planning reserve, not immediate spend. It tracks
 how much source-backed repair expenditure it can cover; unused reserve remains

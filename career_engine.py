@@ -144,13 +144,13 @@ def _insert_ledger(con, round_number, session_name, category, amount, kind, note
 
 def _investment_effect(category, future_car):
     target = "future-car funding" if future_car else "2025 budget commitment"
-    safety = {
-        "Personnel": "Safety/readiness: staffing and response capacity recorded.",
-        "Operations": "Safety/readiness: operational resilience recorded.",
-        "Testing": "Safety/readiness: component validation coverage recorded.",
-        "Chassis / structures": "Safety/readiness: structural spare readiness recorded.",
-    }.get(category, "Safety/readiness: no direct safety allocation.")
-    return f"{target}; {safety} Historical replay results are unchanged."
+    planning = {
+        "Personnel": "Planning classification: personnel allocation recorded.",
+        "Operations": "Planning classification: operations allocation recorded.",
+        "Testing": "Planning classification: testing allocation recorded.",
+        "Chassis / structures": "Planning classification: chassis and structures allocation recorded.",
+    }.get(category, "Planning classification: no direct operational outcome is calculated.")
+    return f"{target}; {planning} No safety outcome or historical replay result is calculated."
 
 
 def _backfill_ledger_effects(con):
@@ -170,7 +170,7 @@ def _backfill_ledger_effects(con):
         elif kind == "crash_reserve_allocation":
             effect = f"Crash contingency: {money(item['amount'])} reserved for source-backed repairs."
         elif kind.startswith("repair"):
-            effect = "Safety/readiness: repair decision recorded; historical replay results are unchanged."
+            effect = "Local repair-finance record; historical replay results are unchanged."
         else:
             effect = "Legacy financial entry retained; historical replay results are unchanged."
         con.execute("UPDATE career_ledger SET effect = ? WHERE id = ?", (effect, item["id"]))
@@ -252,11 +252,11 @@ def sanction_for(spend):
         }
     if breach_pct <= 0.05:
         return {
-            "label": "Minor gameplay breach", "breach": breach, "breach_pct": breach_pct,
+            "label": "Illustrative gameplay tier 1", "breach": breach, "breach_pct": breach_pct,
             "fine": 5_000_000.0, "wind_tunnel_cut": 10, "point_deduction": 0,
         }
     return {
-        "label": "Major gameplay breach", "breach": breach, "breach_pct": breach_pct,
+        "label": "Illustrative gameplay tier 2", "breach": breach, "breach_pct": breach_pct,
         "fine": 10_000_000.0, "wind_tunnel_cut": 20, "point_deduction": 10,
     }
 
@@ -459,15 +459,10 @@ def run_weekend(con):
     if not replay_available():
         raise ValueError("The local exact-2025 replay data is unavailable.")
     round_number = int(state["current_round"])
-    overdue_critical = con.execute(
-        """SELECT title FROM career_incidents
-        WHERE safety_critical = 1 AND state IN ('pending', 'deferred') AND round_number < ?
-        ORDER BY round_number, id""",
-        (round_number,),
-    ).fetchall()
+    overdue_critical = unresolved_critical_incidents(con, before_round=round_number)
     if overdue_critical:
         names = ", ".join(row["title"] for row in overdue_critical)
-        raise ValueError(f"Record the minimum safe repair before advancing: {names}.")
+        raise ValueError(f"Record the project's required repair decision before advancing: {names}.")
     _store_weekend_sessions(con, state, round_number)
     _record_historical_incidents(con, state, round_number)
     if round_number >= len(CALENDAR):
@@ -525,6 +520,65 @@ def pending_incidents(con):
     ]
 
 
+def unresolved_critical_incidents(con, before_round=None):
+    """Return project-flagged critical records that still hold the replay gate.
+
+    This is a workflow rule for the local historical replay. It is deliberately
+    not a real-world vehicle release, inspection, or safety certification.
+    """
+    query = """SELECT * FROM career_incidents
+        WHERE safety_critical = 1 AND state IN ('pending', 'deferred')"""
+    params = []
+    if before_round is not None:
+        query += " AND round_number < ?"
+        params.append(int(before_round))
+    query += " ORDER BY round_number, id"
+    return [dict(row) for row in con.execute(query, params).fetchall()]
+
+
+def safety_planning_snapshot(con):
+    """Expose only the safety-planning evidence already stored by the replay.
+
+    The first planning view intentionally does not calculate a readiness score,
+    repair duration, spare availability, risk probability, or release outcome.
+    Those inputs are not present in the bundled public data.
+    """
+    state = active_state(con)
+    if not state:
+        return None
+    records = [
+        dict(row) for row in con.execute(
+            "SELECT * FROM career_incidents ORDER BY round_number, id"
+        ).fetchall()
+    ]
+    open_records = [item for item in records if item["state"] in {"pending", "deferred"}]
+    open_repair_records = [item for item in open_records if bool(item.get("repair_required"))]
+    open_critical_records = [item for item in open_records if bool(item.get("safety_critical"))]
+    source_linked_records = [
+        item for item in records
+        if str(item.get("source_url") or "").startswith(("https://", "http://"))
+    ]
+    return {
+        "state": state,
+        "records": records,
+        "open_records": open_records,
+        "open_repair_records": open_repair_records,
+        "open_critical_records": open_critical_records,
+        "replay_hold_incidents": unresolved_critical_incidents(
+            con, before_round=state["current_round"]
+        ),
+        "source_linked_records": source_linked_records,
+        "crash_contingency": crash_contingency(con),
+        "readiness_model": {
+            "state": "not_modelled",
+            "reason": (
+                "Verified spare inventory, repair duration, inspection/sign-off, and release approval "
+                "are not available in the bundled public record."
+            ),
+        },
+    }
+
+
 def resolve_incident(con, incident_id, choice, chosen_amount=None):
     row = con.execute("SELECT * FROM career_incidents WHERE id = ?", (incident_id,)).fetchone()
     if not row or row["state"] not in {"pending", "deferred"}:
@@ -532,11 +586,11 @@ def resolve_incident(con, incident_id, choice, chosen_amount=None):
     incident = dict(row)
     repair_required = bool(incident.get("repair_required"))
     safety_critical = bool(incident.get("safety_critical"))
-    # Public records sometimes establish an event but not a safe repair band.
+    # Public records sometimes establish an event but not a supported repair band.
     # Acknowledge it without fabricating a cost or forcing an unsupported choice.
     if choice == "review":
         if safety_critical:
-            raise ValueError("This event includes safety-critical damage and needs a safe-repair record before the next race.")
+            raise ValueError("This event carries the project's critical-repair flag and needs a recorded repair decision before the next race.")
         con.execute("UPDATE career_incidents SET state = 'reviewed', reviewed_at = ? WHERE id = ?", (date.today().isoformat(), incident_id))
         con.commit()
         return
@@ -546,13 +600,13 @@ def resolve_incident(con, incident_id, choice, chosen_amount=None):
         return
     if choice == "old_spec":
         if safety_critical:
-            raise ValueError("This event includes safety-critical damage and needs at least the minimum safe repair.")
+            raise ValueError("This event carries the project's critical-repair flag and cannot use the replay's deferred-parts option.")
         if incident["state"] == "deferred":
             return
         _insert_ledger(
             con, incident["round_number"], "Repair decision", incident["category"], 0.0,
             "repair_deferred", f"Older-spec components retained for {incident['title']}",
-            "Safety/readiness: older-spec components retained; historical replay results are unchanged.",
+            "Local repair record: older-spec components retained; historical replay results are unchanged.",
         )
         con.execute("UPDATE career_incidents SET state = 'deferred', chosen_amount = 0 WHERE id = ?", (incident_id,))
         con.commit()
@@ -665,7 +719,7 @@ def audit(con):
     if player["Position"] == 1 and sanction["breach"] <= 0:
         verdict = "World Champions — Clean Audit"
     elif player["Position"] == 1:
-        verdict = "Pyrrhic Victory — Under FIA Investigation"
+        verdict = "Pyrrhic Victory — Over-cap Review"
     elif sanction["breach"] > 0:
         verdict = "Underperforming & Overbudget"
     elif player["Position"] < team["board_target_rank"] and summary["remaining"] > 5_000_000:
