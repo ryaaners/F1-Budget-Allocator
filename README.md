@@ -11,12 +11,11 @@ terminal output. Install and launch it with the Python module command so it does
 depend on the user-level `streamlit` command being on your `PATH`:
 
 ```bash
-cd /Users/ryaanmahmood/Downloads/f1-budget-allocator
 python3 -m pip install --user -r requirements.txt
 python3 -m streamlit run app.py
 ```
 
-Open the local URL Streamlit prints, normally `http://localhost:8501`.
+Open the local URL Streamlit prints, normally `http://localhost:XXXX`.
 
 The app stores its local state in `f1_budget.db`. The sidebar **Reset active
 simulation** control clears only the season simulation and returns to team setup.
